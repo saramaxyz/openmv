@@ -32,14 +32,22 @@ CMSIS_SRC_C += cmsis/src/$(SYSTEM).c
 endif
 
 CMSIS_SRC_C += $(addprefix cmsis/src/dsp/,\
+	BasicMathFunctions/BasicMathFunctions.c \
 	CommonTables/CommonTables.c \
 	CommonTables/CommonTablesF16.c \
 	FastMathFunctions/FastMathFunctions.c \
 	FastMathFunctions/FastMathFunctionsF16.c \
+	TransformFunctions/arm_bitreversal2.c \
+	TransformFunctions/arm_cfft_radix8_f32.c \
+	TransformFunctions/arm_cfft_f32.c \
+	TransformFunctions/arm_cfft_init_f32.c \
+	TransformFunctions/arm_rfft_fast_f32.c \
+	TransformFunctions/arm_rfft_fast_init_f32.c \
 )
 
 HAL_CFLAGS += -I$(TOP_DIR)/lib/cmsis/include
 HAL_CFLAGS += -I$(TOP_DIR)/lib/cmsis/include/$(CMSIS_INC)
+HAL_CFLAGS += -DARM_MATH_AUTOVECTORIZE
 
 OMV_FIRM_OBJ += $(addprefix $(BUILD)/lib/, $(CMSIS_SRC_S:.s=.o))
 OMV_FIRM_OBJ += $(addprefix $(BUILD)/lib/, $(CMSIS_SRC_C:.c=.o))
