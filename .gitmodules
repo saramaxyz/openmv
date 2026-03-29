@@ -1,7 +1,7 @@
 [submodule "src/micropython"]
 	path = lib/micropython
-	url = https://github.com/openmv/micropython.git
-	branch = openmv
+	url = https://github.com/saramaxyz/micropython.git
+	branch = master
 [submodule "src/omv/modules/ulab"]
 	path = modules/ulab
 	url = https://github.com/v923z/micropython-ulab.git
