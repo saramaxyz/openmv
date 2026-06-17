@@ -23,7 +23,7 @@
  *
  * Virtual image sensor.
  */
-#include "omv_boardconfig.h"
+#include "board_config.h"
 #if (OMV_SOFTCSI_ENABLE == 1)
 
 #include <stdio.h>
@@ -89,7 +89,7 @@ static int snapshot(omv_csi_t *csi, image_t *image, uint32_t flags) {
     // The new buffer hasn't been released yet, so the data pointer
     // has to be set manually after calling framebuffer_to_image.
     framebuffer_to_image(fb, image);
-    image->pixels = buffer->data;
+    image->data = buffer->data;
 
     uint32_t offset = (step++ / 4);
 
@@ -149,7 +149,6 @@ int softcsi_init(omv_csi_t *csi) {
     csi->vsync_pol = 1;
     csi->hsync_pol = 0;
     csi->pixck_pol = 0;
-    csi->frame_sync = 0;
     csi->mono_bpp = 1;
 
     return 0;

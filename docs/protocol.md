@@ -112,6 +112,7 @@ Commands are organized by functional area:
 | 0x11 | SYS_BOOT | 0 bytes | No response | Jump to bootloader |
 | 0x12 | SYS_INFO | 0 bytes | 76 bytes | Get system information |
 | 0x13 | SYS_EVENT | 4 bytes | No response | System event notification |
+| 0x14 | SYS_MEMORY | 0 bytes | Variable (4 + 24 x entry count) | Get memory statistics |
 
 #### Channel Operations (0x20-0x2F)
 | Opcode | Command | Payload Size | Response Size | Description |
@@ -259,6 +260,32 @@ Response Format: (76 bytes)
 | 56-59  | framebuffer_size_kb | 4 bytes  | Size         | Main framebuffer size (KB)        |
 | 60-63  | stream_buffer_size_kb| 4 bytes | Size         | Stream framebuffer size (KB)      |
 | 64-75  | reserved            | 12 bytes | Padding      | Reserved for future expansion     |
+
+**SYS_MEMORY (0x14)**
+
+Request Format: (No payload)
+
+Response Format: (Variable length - 4 byte header + 24 bytes per entry)
+
+Header:
+| Offset | Field    | Size     | Type                    | Description                       |
+|--------|----------|----------|-------------------------|-----------------------------------|
+| 0      | count    | 1 byte   | Count                   | Number of memory pool entries     |
+| 1-3    | reserved | 3 bytes  | Padding                 | Reserved for future use           |
+
+Per-entry format (24 bytes each, starting at offset 4):
+| Offset | Field    | Size     | Type                    | Description                       |
+|--------|----------|----------|-------------------------|-----------------------------------|
+| 0      | type     | 1 byte   | Enum                    | Pool type (0x00=GC, 0x01=UMA)     |
+| 1      | reserved | 1 byte   | Padding                 | Reserved for future use           |
+| 2-3    | flags    | 2 bytes  | Bitfield                | Pool flags (UMA pool flags, 0 for GC) |
+| 4-7    | total    | 4 bytes  | Size                    | Total bytes in pool               |
+| 8-11   | used     | 4 bytes  | Size                    | Bytes allocated (non-persistent)  |
+| 12-15  | free     | 4 bytes  | Size                    | Bytes free                        |
+| 16-19  | persist  | 4 bytes  | Size                    | Persistent bytes (0 for GC)       |
+| 20-23  | peak     | 4 bytes  | Size                    | Peak usage in bytes (0 for GC)    |
+
+The response always contains one GC entry (index 0) followed by one entry per UMA pool. The total number of entries depends on the board configuration.
 
 #### Channel Operations Commands
 
@@ -452,6 +479,7 @@ Each channel type supports specific IOCTL commands for configuration and control
 | 0x00 | STREAM_CTRL | 4 bytes | Enable/disable streaming (uint32_t enable) |
 | 0x01 | STREAM_RAW_CTRL | 4 bytes | Enable/disable raw streaming (uint32_t enable) |
 | 0x02 | STREAM_RAW_CFG | 8 bytes | Set raw stream resolution (uint32_t width, uint32_t height) |
+| 0x03 | STREAM_SOURCE | 4 bytes | Set stream source (uint32_t chip_id) |
 
 #### Profile Channel IOCTLs
 | Request | Name | Payload Size | Description |
@@ -615,4 +643,6 @@ The `SYS_INFO` command returns hardware and memory information in a 76-byte resp
 
 | Version | Date     | Status   | Type                    | Description                            |
 |---------|----------|----------|-------------------------|----------------------------------------|
-| 1.0.0   | 2025     | Current  | Specification           | OpenMV Protocol specification          |
+| 1.0.2   | 2026     | Current  | Specification           | Add SYS_MEMORY command                 |
+| 1.0.1   | 2026     |          | Specification           | Add STREAM_SOURCE ioctl                |
+| 1.0.0   | 2025     |          | Specification           | OpenMV Protocol specification          |

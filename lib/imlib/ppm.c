@@ -119,17 +119,19 @@ void ppm_read_pixels(file_t *fp, image_t *img, int n_lines, ppm_read_settings_t 
             }
         }
     } else if (rs->ppm_fmt == '5') {
-        file_read(fp, img->pixels, n_lines * img->w);
+        file_read(fp, img->data, n_lines * img->w);
     } else if (rs->ppm_fmt == '6') {
+        uint8_t *row_buf = uma_malloc(img->w * 3, UMA_DTCM);
         for (int i = 0; i < n_lines; i++) {
+            file_read(fp, row_buf, img->w * 3);
             for (int j = 0; j < img->w; j++) {
-                uint8_t r, g, b;
-                file_read(fp, &r, 1);
-                file_read(fp, &g, 1);
-                file_read(fp, &b, 1);
+                uint8_t r = row_buf[j * 3 + 0];
+                uint8_t g = row_buf[j * 3 + 1];
+                uint8_t b = row_buf[j * 3 + 2];
                 IM_SET_RGB565_PIXEL(img, j, i, COLOR_R8_G8_B8_TO_RGB565(r, g, b));
             }
         }
+        uma_free(row_buf);
     }
 }
 
@@ -137,10 +139,10 @@ void ppm_read(image_t *img, const char *path) {
     file_t fp;
     ppm_read_settings_t rs;
 
-    file_open(&fp, path, true, FA_READ | FA_OPEN_EXISTING);
+    file_open(&fp, path, FA_READ | FA_OPEN_EXISTING);
     ppm_read_geometry(&fp, img, path, &rs);
 
-    if (!img->pixels) {
+    if (!img->data) {
         image_alloc(img, img->w * img->h * img->bpp);
     }
     ppm_read_pixels(&fp, img, img->h, &rs);
@@ -154,33 +156,34 @@ void ppm_write_subimg(image_t *img, const char *path, rectangle_t *r) {
     }
 
     file_t fp;
-    file_open(&fp, path, true, FA_WRITE | FA_CREATE_ALWAYS);
+    file_open(&fp, path, FA_WRITE | FA_CREATE_ALWAYS);
 
     if (IM_IS_GS(img)) {
         char buffer[20]; // exactly big enough for 5-digit w/h
         int len = snprintf(buffer, 20, "P5\n%d %d\n255\n", rect.w, rect.h);
         file_write(&fp, buffer, len);
         if ((rect.x == 0) && (rect.w == img->w)) {
-            file_write(&fp, img->pixels + (rect.y * img->w), rect.w * rect.h);
+            file_write(&fp, img->data + (rect.y * img->w), rect.w * rect.h);
         } else {
             for (int i = 0; i < rect.h; i++) {
-                file_write(&fp, img->pixels + ((rect.y + i) * img->w) + rect.x, rect.w);
+                file_write(&fp, img->data + ((rect.y + i) * img->w) + rect.x, rect.w);
             }
         }
     } else {
         char buffer[20]; // exactly big enough for 5-digit w/h
         int len = snprintf(buffer, 20, "P6\n%d %d\n255\n", rect.w, rect.h);
         file_write(&fp, buffer, len);
+        uint8_t *row_buf = uma_malloc(rect.w * 3, UMA_DTCM);
         for (int i = 0; i < rect.h; i++) {
             for (int j = 0; j < rect.w; j++) {
                 int pixel = IM_GET_RGB565_PIXEL(img, (rect.x + j), (rect.y + i));
-                char buff[3];
-                buff[0] = COLOR_RGB565_TO_R8(pixel);
-                buff[1] = COLOR_RGB565_TO_G8(pixel);
-                buff[2] = COLOR_RGB565_TO_B8(pixel);
-                file_write(&fp, buff, 3);
+                row_buf[j * 3 + 0] = COLOR_RGB565_TO_R8(pixel);
+                row_buf[j * 3 + 1] = COLOR_RGB565_TO_G8(pixel);
+                row_buf[j * 3 + 2] = COLOR_RGB565_TO_B8(pixel);
             }
+            file_write(&fp, row_buf, rect.w * 3);
         }
+        uma_free(row_buf);
     }
     file_close(&fp);
 }

@@ -14,10 +14,12 @@ on:
       - '!**.rst'
       - '!**.md'
       - '!cubeai**'
-      - '!scripts**'
+      - '!scripts/examples**'
+      - 'scripts/libraries/**'
+      - 'scripts/unittest/**'
 
   pull_request:
-    branches:    
+    branches:
       - 'master'
     paths:
       - '**'
@@ -27,7 +29,9 @@ on:
       - '!**.rst'
       - '!**.md'
       - '!cubeai**'
-      - '!scripts**'
+      - '!scripts/examples**'
+      - 'scripts/libraries/**'
+      - 'scripts/unittest/**'
 
 jobs:
   build-firmware:
@@ -79,12 +83,16 @@ jobs:
     - name: '🧱 Update submodules'
       run: source tools/ci.sh && ci_update_submodules
 
+    - name: 'Read SDK version'
+      id: sdk-ver
+      run: echo "version=$(cat SDK_VERSION)" >> "$GITHUB_OUTPUT"
+
     - name: '♻ Cache SDK'
       uses: actions/cache@v5.0.3
       id: sdk-cache
       with:
-        path: ~/openmv-sdk-1.1.0
-        key: openmv-sdk-1.1.0-linux-x86_64
+        path: ~/openmv-sdk-${{ steps.sdk-ver.outputs.version }}
+        key: openmv-sdk-${{ steps.sdk-ver.outputs.version }}-linux-x86_64
 
     - name: '🛠 Install dependencies'
       run: |
@@ -204,7 +212,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: '🔥 Create stable release'
-      uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b
+      uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
       with:
         draft: true
         files: firmware_*.zip
@@ -213,7 +221,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: '🧹 Remove artifacts'
-      uses: geekyeggo/delete-artifact@v5
+      uses: geekyeggo/delete-artifact@v6
       with:
         name: firmware
         failOnError: false
@@ -256,7 +264,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: '🔥 Create development release'
-      uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b
+      uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
       with:
         draft: false
         name: Development Release
@@ -269,7 +277,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: '🧹 Remove artifacts'
-      uses: geekyeggo/delete-artifact@v5
+      uses: geekyeggo/delete-artifact@v6
       with:
         name: firmware
         failOnError: false

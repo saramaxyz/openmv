@@ -20,7 +20,7 @@ DEBUGGER ?= JLINK
 
 # Dummy target to run sdk/clean
 ifeq ($(TARGET),)
-  ifeq ($(filter sdk clean,$(MAKECMDGOALS)),)
+  ifeq ($(filter sdk,$(MAKECMDGOALS)),)
     $(error Invalid or no TARGET specified)
   else
     TARGET=OPENMV4
@@ -28,19 +28,24 @@ ifeq ($(TARGET),)
 endif
 
 # OpenMV SDK configuration
-SDK_VERSION = 1.1.0
+SDK_VERSION := $(shell cat $(CURDIR)/SDK_VERSION)
 SDK_DIR ?= $(HOME)/openmv-sdk-$(SDK_VERSION)
 SDK_STAMP = $(SDK_DIR)/sdk.version
 
 # Check if the SDK is downloaded
 ifeq ($(filter sdk clean,$(MAKECMDGOALS)),)
   ifeq ($(wildcard $(SDK_STAMP)),)
-    $(error OpenMV SDK not found. Run 'make sdk' to install it.)
+    OLD_SDK_STAMPS := $(wildcard $(dir $(SDK_DIR))openmv-sdk-*/sdk.version)
+    ifneq ($(OLD_SDK_STAMPS),)
+      SDK_INSTALLED := $(shell cat $(OLD_SDK_STAMPS) 2>/dev/null | sort -u | tr '\n' ' ')
+    endif
   else
     SDK_INSTALLED := $(shell cat $(SDK_STAMP))
-    ifneq ($(SDK_INSTALLED),$(SDK_VERSION))
-      $(error OpenMV SDK version mismatch. Run 'make sdk'.)
-    endif
+  endif
+  ifeq ($(SDK_INSTALLED),)
+    $(error OpenMV SDK not found. Run 'make sdk' to install it.)
+  else ifneq ($(SDK_INSTALLED),$(SDK_VERSION))
+    $(error OpenMV SDK version mismatch (installed: $(SDK_INSTALLED), required: $(SDK_VERSION)). Run 'make sdk' to update.)
   endif
 endif
 
@@ -69,11 +74,12 @@ export ECHO    := $(Q)@echo
 export MAKE    := $(Q)make
 export CAT     := $(Q)cat
 export MKROMFS := mkromfs.py
+export GENLINK := gen_linker.py
 export MACHINE := $(shell uname -m)
 
 # Directories
 export TOP_DIR:=$(shell pwd)
-export BUILD:=$(TOP_DIR)/build
+export BUILD:=$(TOP_DIR)/build/$(TARGET)
 export TOOLS_DIR:=$(TOP_DIR)/tools
 export FW_DIR:=$(BUILD)/bin
 export BOOT_DIR=boot
@@ -91,9 +97,9 @@ export OMV_LIB_DIR:=$(TOP_DIR)/scripts/libraries
 export FROZEN_MANIFEST:=$(OMV_BOARD_CONFIG_DIR)/manifest.py
 
 # Prepend SDK bin directories to PATH.
-STEDGEAI_CORE = $(wildcard $(SDK_DIR)/stedgeai/[0-9]*)
-STEDGEAI_UTIL = Utilities/$(if $(filter Darwin,$(shell uname -s)),macarm,linux)
-export PATH := $(SDK_DIR)/gcc/bin:$(SDK_DIR)/llvm/bin:$(SDK_DIR)/cmake/bin:$(SDK_DIR)/python/bin:$(SDK_DIR)/stcubeprog/bin:$(STEDGEAI_CORE)/$(STEDGEAI_UTIL):$(SDK_DIR)/fvp/bin:$(PATH)
+STEDGEAI_CORE := $(SDK_DIR)/stedgeai
+STEDGEAI_UTIL := Utilities/$(if $(filter Darwin,$(shell uname -s)),macarm,linux)
+export PATH := $(SDK_DIR)/gcc/bin:$(SDK_DIR)/llvm/bin:$(SDK_DIR)/cmake/bin:$(SDK_DIR)/python/bin:$(SDK_DIR)/stcubeprog/bin:$(STEDGEAI_CORE)/$(STEDGEAI_UTIL):$(SDK_DIR)/bin:$(SDK_DIR)/fvp/bin:$(PATH)
 
 # Debugging/Optimization
 ifeq ($(DEBUG), 1)
@@ -143,7 +149,7 @@ CFLAGS += -finstrument-functions-exclude-file-list=lib/cmsis,lib/stm32,/lib/mimx
 endif
 
 # Include OpenMV board config first to set the port.
-include $(OMV_BOARD_CONFIG_DIR)/omv_boardconfig.mk
+include $(OMV_BOARD_CONFIG_DIR)/board_config.mk
 
 # Include MicroPython board config.
 #include $(MP_BOARD_CONFIG_DIR)/mpconfigboard.mk
@@ -159,116 +165,13 @@ MPY_MKARGS = PORT=$(PORT) BOARD=$(TARGET) DEBUG=$(DEBUG) MICROPY_MANIFEST_OMV_LI
              FROZEN_MANIFEST=$(FROZEN_MANIFEST) OMV_SRC_QSTR="$(OMV_SRC_QSTR)"\
              MICROPY_ROM_TEXT_COMPRESSION=$(ROM_TEXT_COMPRESSION) USER_C_MODULES=$(TOP_DIR)
 
-
+# Include the port Makefile.
+include $(OMV_PORT_DIR)/port_config.mk
 
 # Check GCC toolchain version.
 ifeq ($(CPU),cortex-m55)
 include $(TOP_DIR)/common/check_toolchain.mk
 endif
-
-# Configure additional built-in modules. Note must define both the CFLAGS and the Make command line args.
-ifeq ($(MICROPY_PY_CSI), 1)
-MPY_CFLAGS += -DMICROPY_PY_CSI=1
-MPY_MKARGS += MICROPY_PY_CSI=1
-endif
-
-ifeq ($(MICROPY_PY_CSI_NG), 1)
-MPY_CFLAGS += -DMICROPY_PY_CSI_NG=1
-MPY_MKARGS += MICROPY_PY_CSI_NG=1
-endif
-
-ifeq ($(MICROPY_PY_PROTOCOL), 1)
-MPY_CFLAGS += -DMICROPY_PY_PROTOCOL=1
-MPY_MKARGS += MICROPY_PY_PROTOCOL=1
-endif
-
-ifeq ($(MICROPY_PY_FIR), 1)
-MPY_CFLAGS += -DMICROPY_PY_FIR=1
-MPY_MKARGS += MICROPY_PY_FIR=1
-endif
-
-ifeq ($(MICROPY_PY_WINC1500), 1)
-MPY_CFLAGS += -DMICROPY_PY_WINC1500=1
-MPY_MKARGS += MICROPY_PY_WINC1500=1
-MPY_PENDSV_ENTRIES += PENDSV_DISPATCH_WINC,
-endif
-
-ifeq ($(MICROPY_PY_IMU), 1)
-MPY_CFLAGS += -DMICROPY_PY_IMU=1
-MPY_MKARGS += MICROPY_PY_IMU=1
-endif
-
-ifeq ($(MICROPY_PY_CRC), 1)
-MPY_CFLAGS += -DMICROPY_PY_CRC=1
-MPY_MKARGS += MICROPY_PY_CRC=1
-endif
-
-ifeq ($(MICROPY_PY_BTREE), 1)
-MPY_CFLAGS += -DMICROPY_PY_BTREE=1
-MPY_MKARGS += MICROPY_PY_BTREE=1
-endif
-
-ifeq ($(MICROPY_PY_TOF), 1)
-MPY_CFLAGS += -DMICROPY_PY_TOF=1
-MPY_MKARGS += MICROPY_PY_TOF=1
-endif
-
-ifeq ($(MICROPY_PY_ULAB), 1)
-MPY_CFLAGS += -DMICROPY_PY_ULAB=1
-MPY_CFLAGS += -DULAB_CONFIG_FILE="\"$(OMV_BOARD_CONFIG_DIR)/ulab_config.h\""
-MPY_MKARGS += MICROPY_PY_ULAB=1
-endif
-
-ifeq ($(MICROPY_PY_AUDIO), 1)
-MPY_CFLAGS += -DMICROPY_PY_AUDIO=1
-MPY_MKARGS += MICROPY_PY_AUDIO=1
-endif
-
-ifeq ($(MICROPY_PY_DISPLAY), 1)
-MPY_CFLAGS += -DMICROPY_PY_DISPLAY=1
-MPY_MKARGS += MICROPY_PY_DISPLAY=1
-endif
-
-ifeq ($(MICROPY_PY_TV), 1)
-MPY_CFLAGS += -DMICROPY_PY_TV=1
-MPY_MKARGS += MICROPY_PY_TV=1
-endif
-
-ifeq ($(CUBEAI), 1)
-MPY_CFLAGS += -DMICROPY_PY_CUBEAI=1
-MPY_MKARGS += MICROPY_PY_CUBEAI=1
-endif
-
-ifeq ($(MICROPY_PY_ML), 1)
-MPY_CFLAGS += -DMICROPY_PY_ML=1
-MPY_MKARGS += MICROPY_PY_ML=1
-endif
-
-ifeq ($(MICROPY_PY_ML_TFLM), 1)
-MPY_CFLAGS += -DMICROPY_PY_ML_TFLM=1
-MPY_MKARGS += MICROPY_PY_ML_TFLM=1
-endif
-
-ifeq ($(MICROPY_PY_ML_STAI), 1)
-MPY_CFLAGS += -DMICROPY_PY_ML_STAI=1
-MPY_MKARGS += MICROPY_PY_ML_STAI=1
-endif
-
-ifeq ($(MICROPY_PY_UNITTEST), 1)
-MPY_CFLAGS += -DMICROPY_PY_UNITTEST=1
-MPY_MKARGS += MICROPY_PY_UNITTEST=1
-endif
-
-MPY_PENDSV_ENTRIES := $(shell echo $(MPY_PENDSV_ENTRIES) | tr -d '[:space:]')
-
-MPY_CFLAGS += -DMICROPY_HW_USB_VID=$(OMV_USB_VID)
-MPY_CFLAGS += -DMICROPY_HW_USB_PID=$(OMV_USB_PID)
-
-MPY_CFLAGS += -DMICROPY_BOARD_PENDSV_ENTRIES="$(MPY_PENDSV_ENTRIES)"
-MPY_CFLAGS += -DMP_CONFIGFILE=\<$(OMV_PORT_DIR)/omv_mpconfigport.h\>
-
-# Include the port Makefile.
-include $(OMV_PORT_DIR)/omv_portconfig.mk
 
 # Freeze recursively-expanded variables into simply-expanded ones.
 # Without this, make re-evaluates all sub-variable references every
@@ -315,7 +218,7 @@ sdk:
 submodules:
 	$(MAKE) -C $(MICROPY_DIR)/ports/$(PORT) BOARD=$(TARGET) submodules
 
-debug:
+debug: $(ROMFS_IMAGE)
 ifeq ($(DEBUGGER),NONE)
 	$(error This target does not support debugging)
 endif

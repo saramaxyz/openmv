@@ -592,7 +592,7 @@ static int jpeg_check_highwater(jpeg_buf_t *jpeg_buf) {
             return 1;
         }
         jpeg_buf->length += 1024;
-        jpeg_buf->buf = m_realloc(jpeg_buf->buf, jpeg_buf->length);
+        jpeg_buf->buf = uma_realloc(jpeg_buf->buf, jpeg_buf->length, 0);
     }
     return 0;
 }
@@ -605,7 +605,7 @@ static void jpeg_put_char(jpeg_buf_t *jpeg_buf, char c) {
             return;
         }
         jpeg_buf->length += 1024;
-        jpeg_buf->buf = m_realloc(jpeg_buf->buf, jpeg_buf->length);
+        jpeg_buf->buf = uma_realloc(jpeg_buf->buf, jpeg_buf->length, 0);
     }
 
     jpeg_buf->buf[jpeg_buf->idx++] = c;
@@ -619,7 +619,7 @@ static void jpeg_put_bytes(jpeg_buf_t *jpeg_buf, const void *data, int size) {
             return;
         }
         jpeg_buf->length += 1024;
-        jpeg_buf->buf = m_realloc(jpeg_buf->buf, jpeg_buf->length);
+        jpeg_buf->buf = uma_realloc(jpeg_buf->buf, jpeg_buf->length, 0);
     }
 
     memcpy(jpeg_buf->buf + jpeg_buf->idx, data, size);
@@ -932,8 +932,8 @@ static void jpeg_write_headers(jpeg_buf_t *jpeg_buf, int w, int h, int bpp, jpeg
 
 bool jpeg_compress(image_t *src, image_t *dst, int quality, bool realloc, jpeg_subsampling_t subsampling) {
     if (!dst->data) {
-        uint32_t size = 0;
-        dst->data = fb_alloc_all(&size, FB_ALLOC_PREFER_SIZE | FB_ALLOC_CACHE_ALIGN);
+        uint32_t size = uma_avail(0);
+        dst->data = uma_malloc(size, UMA_CACHE);
         dst->size = IMLIB_IMAGE_MAX_SIZE(size);
     }
 
@@ -944,7 +944,7 @@ bool jpeg_compress(image_t *src, image_t *dst, int quality, bool realloc, jpeg_s
     // JPEG buffer
     jpeg_buf_t jpeg_buf = {
         .idx = 0,
-        .buf = dst->pixels,
+        .buf = dst->data,
         .length = dst->size,
         .bitc = 0,
         .bitb = 0,
@@ -1355,18 +1355,17 @@ void jpeg_read_geometry(file_t *fp, image_t *img, const char *path, jpg_read_set
 // This function reads the pixel values of an image.
 void jpeg_read_pixels(file_t *fp, image_t *img) {
     file_seek(fp, 0);
-    file_read(fp, img->pixels, img->size);
+    file_read(fp, img->data, img->size);
 }
 
 void jpeg_read(image_t *img, const char *path) {
     file_t fp;
     jpg_read_settings_t rs;
 
-    // Do not use file buffering here.
-    file_open(&fp, path, false, FA_READ | FA_OPEN_EXISTING);
+    file_open(&fp, path, FA_READ | FA_OPEN_EXISTING);
     jpeg_read_geometry(&fp, img, path, &rs);
 
-    if (!img->pixels) {
+    if (!img->data) {
         image_alloc(img, img->size);
     }
 
@@ -1376,18 +1375,18 @@ void jpeg_read(image_t *img, const char *path) {
 
 void jpeg_write(image_t *img, const char *path, int quality) {
     file_t fp;
-    file_open(&fp, path, false, FA_WRITE | FA_CREATE_ALWAYS);
+    file_open(&fp, path, FA_WRITE | FA_CREATE_ALWAYS);
     if (IM_IS_JPEG(img)) {
-        file_write(&fp, img->pixels, img->size);
+        file_write(&fp, img->data, img->size);
     } else {
         // alloc in jpeg compress
-        image_t out = { .w = img->w, .h = img->h, .pixfmt = PIXFORMAT_JPEG, .size = 0, .pixels = NULL };
+        image_t out = { .w = img->w, .h = img->h, .pixfmt = PIXFORMAT_JPEG, .size = 0, .data = NULL };
         // When jpeg_compress needs more memory than in currently allocated it
         // will try to realloc. MP will detect that the pointer is outside of
         // the heap and return NULL which will cause an out of memory error.
         jpeg_compress(img, &out, quality, false, JPEG_SUBSAMPLING_AUTO);
-        file_write(&fp, out.pixels, out.size);
-        fb_free(); // frees alloc in jpeg_compress()
+        file_write(&fp, out.data, out.size);
+        uma_free(out.data);
     }
     file_close(&fp);
 }

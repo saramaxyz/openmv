@@ -40,9 +40,9 @@
 #include "omv_gpio.h"
 #include "omv_i2c.h"
 #include "omv_csi.h"
-#include "omv_boardconfig.h"
+#include "board_config.h"
 #include "framebuffer.h"
-#include "unaligned_memcpy.h"
+#include "memcpy.h"
 #include "sensor_config.h"
 
 #ifndef OMV_CSI_RESET_DELAY
@@ -176,9 +176,6 @@ __weak int omv_csi_init() {
     #if defined(OMV_CSI_RESET_PIN)
     omv_gpio_config(OMV_CSI_RESET_PIN, OMV_GPIO_MODE_OUTPUT, OMV_GPIO_PULL_NONE, OMV_GPIO_SPEED_LOW, -1);
     #endif
-    #if defined(OMV_CSI_FSYNC_PIN)
-    omv_gpio_config(OMV_CSI_FSYNC_PIN, OMV_GPIO_MODE_OUTPUT, OMV_GPIO_PULL_NONE, OMV_GPIO_SPEED_LOW, -1);
-    #endif
     #if defined(OMV_CSI_POWER_PIN)
     omv_gpio_config(OMV_CSI_POWER_PIN, OMV_GPIO_MODE_OUTPUT, OMV_GPIO_PULL_NONE, OMV_GPIO_SPEED_LOW, -1);
     #endif
@@ -193,6 +190,9 @@ __weak int omv_csi_init() {
         csi->clk = &csi_clk;
         csi->fb = framebuffer_get(FB_MAINFB_ID);
         csi->color_palette = rainbow_table;
+        #if defined(OMV_CSI_FSYNC_PIN)
+        csi->fsync_pin = OMV_CSI_FSYNC_PIN;
+        #endif
         memcpy(csi->resolution, csi_resolution, sizeof(csi_resolution));
         omv_csi_ops_init(csi);
 
@@ -272,11 +272,9 @@ __weak int omv_csi_abort(omv_csi_t *csi, bool fifo_flush, bool in_irq) {
         framebuffer_flush(csi->fb);
     }
 
-    #if defined(OMV_CSI_FSYNC_PIN)
-    if (csi->frame_sync) {
-        omv_gpio_write(OMV_CSI_FSYNC_PIN, 0);
+    if (csi->fsync_pin) {
+        omv_gpio_write(csi->fsync_pin, 0);
     }
-    #endif
 
     return 0;
 }
@@ -593,6 +591,10 @@ int omv_csi_probe(omv_i2c_t *i2c) {
             return OMV_CSI_ERROR_ISC_INIT_FAILED;
         }
 
+        if (csi->fsync_pin) {
+            omv_gpio_config(csi->fsync_pin, OMV_GPIO_MODE_OUTPUT, OMV_GPIO_PULL_NONE, OMV_GPIO_SPEED_LOW, -1);
+        }
+
         // Sensors can change the clock's frequency or disable it
         // (with clk_hz=0). This is allowed only if the clock is
         // not shared (dev_count == 1) or if this is a main sensor.
@@ -813,7 +815,7 @@ __weak int omv_csi_set_pixformat(omv_csi_t *csi, pixformat_t pixformat) {
     csi->fb->pixfmt = PIXFORMAT_INVALID;
 
     // Auto-adjust the number of frame buffers.
-    omv_csi_set_framebuffers(csi, -1, false);
+    omv_csi_set_framebuffers(csi, -1);
 
     // Reconfigure the hardware if needed.
     return omv_csi_config(csi, OMV_CSI_CONFIG_PIXFORMAT);
@@ -857,7 +859,7 @@ __weak int omv_csi_set_framesize(omv_csi_t *csi, omv_csi_framesize_t framesize) 
     csi->fb->pixfmt = PIXFORMAT_INVALID;
 
     // Auto-adjust the number of frame buffers.
-    omv_csi_set_framebuffers(csi, -1, false);
+    omv_csi_set_framebuffers(csi, -1);
 
     // Reconfigure the hardware if needed.
     return omv_csi_config(csi, OMV_CSI_CONFIG_FRAMESIZE);
@@ -971,7 +973,7 @@ __weak int omv_csi_set_windowing(omv_csi_t *csi, int x, int y, int w, int h) {
     csi->fb->pixfmt = PIXFORMAT_INVALID;
 
     // Auto-adjust the number of frame buffers.
-    omv_csi_set_framebuffers(csi, -1, false);
+    omv_csi_set_framebuffers(csi, -1);
 
     // Reconfigure the hardware if needed.
     return omv_csi_config(csi, OMV_CSI_CONFIG_WINDOWING);
@@ -1164,6 +1166,17 @@ void omv_csi_stats_update(omv_csi_t *csi, uint32_t *r, uint32_t *g, uint32_t *b,
         stats->g_avg = *g;
         stats->b_avg = *b;
     } else {
+        // Freeze the EMA when raw R/G/B ratios collapse above 2/3rds — that means
+        // saturated pixels are pinning all channels equal, which would bias AWB
+        // toward "no correction" and tint unsaturated regions green. AEC still
+        // sees live luminance and drops exposure to resolve the saturation.
+        uint32_t min = IM_MIN(*r, IM_MIN(*g, *b));
+        uint32_t max = IM_MAX(*r, IM_MAX(*g, *b));
+
+        if (min * 3 > max * 2) {
+            return;
+        }
+
         uint32_t dt_ms = ms - stats->last_ms;
         // Continuous-time EMA gain for elapsed dt: alpha = 1 - exp(-dt/τ)
         float alpha = IM_CLAMP(1.0f - expf(-((float) dt_ms) / OMV_CSI_STATS_TAU_MS), 0.0f, 1.0f);
@@ -1325,7 +1338,7 @@ __weak bool omv_csi_get_auto_rotation(omv_csi_t *csi) {
     return csi->auto_rotation;
 }
 
-__weak int omv_csi_set_framebuffers(omv_csi_t *csi, size_t count, bool expand) {
+__weak int omv_csi_set_framebuffers(omv_csi_t *csi, size_t count) {
     // Disable any ongoing frame capture.
     omv_csi_abort(csi, true, false);
 
@@ -1348,14 +1361,14 @@ __weak int omv_csi_set_framebuffers(omv_csi_t *csi, size_t count, bool expand) {
 
     if (count == -1) {
         for (size_t i = 3; i > 0; i--) {
-            if (!framebuffer_resize(csi->fb, i, frame_size, expand)) {
+            if (!framebuffer_resize(csi->fb, i, frame_size)) {
                 return 0;
             }
         }
         return -1;
     }
 
-    return framebuffer_resize(csi->fb, count, frame_size, expand);
+    return framebuffer_resize(csi->fb, count, frame_size);
 }
 
 __weak int omv_csi_set_special_effect(omv_csi_t *csi, omv_csi_sde_t sde) {
@@ -1523,7 +1536,7 @@ __weak int omv_csi_auto_crop_framebuffer(omv_csi_t *csi) {
     }
 
     // Auto-adjust the number of frame buffers.
-    omv_csi_set_framebuffers(csi, -1, false);
+    omv_csi_set_framebuffers(csi, -1);
     return 0;
 }
 
@@ -1637,7 +1650,8 @@ __weak int omv_csi_snapshot(omv_csi_t *csi, image_t *image, uint32_t flags) {
     // Note: We must check if the buffer has been used before releasing it,
     // as it might have been captured in non-blocking mode but not used yet.
     if (buffer && (buffer->flags & VB_FLAG_USED)) {
-        if (flags & OMV_CSI_FLAG_UPDATE_FB) {
+        framebuffer_t *stream_fb = framebuffer_get(FB_STREAM_ID);
+        if (!(flags & OMV_CSI_FLAG_NO_UPDATE) && omv_csi_match(csi, stream_fb->source)) {
             image_t tmp;
             framebuffer_to_image(csi->fb, &tmp);
             framebuffer_update_preview(&tmp);
@@ -1648,21 +1662,17 @@ __weak int omv_csi_snapshot(omv_csi_t *csi, image_t *image, uint32_t flags) {
     }
 
     // Toggle FSYNC.
-    #if defined(OMV_CSI_FSYNC_PIN)
-    if (csi->frame_sync) {
-        omv_gpio_write(OMV_CSI_FSYNC_PIN, 1);
+    if (csi->fsync_pin) {
+        omv_gpio_write(csi->fsync_pin, 1);
     }
-    #endif
 
     // Call the sensor specific function.
     int ret = csi->snapshot(csi, image, flags);
 
     // Toggle FSYNC.
-    #if defined(OMV_CSI_FSYNC_PIN)
-    if (csi->frame_sync) {
-        omv_gpio_write(OMV_CSI_FSYNC_PIN, 0);
+    if (csi->fsync_pin) {
+        omv_gpio_write(csi->fsync_pin, 0);
     }
-    #endif
 
     // Call the sensor specific post-process.
     if (ret >= 0 && csi->post_process && !(flags & OMV_CSI_FLAG_NO_POST)) {

@@ -57,7 +57,7 @@ IMLIB_SRC_C += \
     lbp.c \
     line.c \
     lodepng.c \
-    lsd.c \
+    edl.c \
     mathop.c \
     mjpeg.c \
     orb.c \
@@ -83,6 +83,7 @@ CFLAGS += -I$(TOP_DIR)/lib/imlib -DAPRILTAG_HAVE_CONFIG
 
 ifeq ($(CLANG_ENABLE),1)
 OMV_CLANG_OBJ = $(BUILD)/lib/imlib/bayer.o
+OMV_CLANG_OBJ = $(BUILD)/lib/imlib/imlib.o
 endif
 
 # Enable instrumentation.

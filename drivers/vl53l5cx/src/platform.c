@@ -23,7 +23,7 @@
  *
  * VL53L5CX platform implementation.
  */
-#include "omv_boardconfig.h"
+#include "board_config.h"
 #if (OMV_TOF_VL53L5CX_ENABLE == 1)
 
 #include "py/mphal.h"
@@ -55,7 +55,7 @@ void vl53l5cx_shutdown(VL53L5CX_Platform *platform) {
 }
 
 void vl53l5cx_swap(uint8_t *buf, uint16_t size) {
-    for (size_t i=0; i<size; i++) {
+    for (size_t i = 0; i < size / 4; i++) {
         ((uint32_t *) buf)[i] = __REV(((uint32_t *) buf)[i]);
     }
 }

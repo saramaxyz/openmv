@@ -59,7 +59,7 @@
 #include "pico/aon_timer.h"
 #include "shared/timeutils/timeutils.h"
 
-#include "omv_boardconfig.h"
+#include "board_config.h"
 #include "framebuffer.h"
 #include "omv_i2c.h"
 #include "omv_csi.h"
@@ -181,7 +181,7 @@ soft_reset:
     soft_timer_init();
     usbdbg_init();
 
-    fb_alloc_init0();
+    uma_init();
     framebuffer_init0();
     #if MICROPY_PY_CSI
     omv_csi_init0();

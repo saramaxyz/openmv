@@ -20,169 +20,225 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 #
-# Collects MicroPython object files
+# Configures built-in MicroPython modules, builds MicroPython, and
+# archives all objects into libmicropython.a for linking.
+#
+# Ports must define MPY_LIB_EXCLUDE before including this file to
+# exclude port-specific objects that conflict with the OpenMV build.
 
-# Add core py object files
-MPY_FIRM_OBJ += $(wildcard $(BUILD)/$(MICROPY_DIR)/py/*.o)
+# +-----------------------------------------------------+
+# | Module configuration                                |
+# +-----------------------------------------------------+
+# Note: must define both the CFLAGS and Make args.
+ifeq ($(MICROPY_PY_CSI), 1)
+MPY_CFLAGS += -DMICROPY_PY_CSI=1
+MPY_MKARGS += MICROPY_PY_CSI=1
+endif
 
-# Add extmod object files.
-MPY_FIRM_OBJ += $(wildcard $(BUILD)/$(MICROPY_DIR)/extmod/*.o)
+ifeq ($(MICROPY_PY_CSI_NG), 1)
+MPY_CFLAGS += -DMICROPY_PY_CSI_NG=1
+MPY_MKARGS += MICROPY_PY_CSI_NG=1
+endif
 
-# Add shared object files.
-MPY_FIRM_OBJ += $(wildcard $(BUILD)/$(MICROPY_DIR)/shared/**/*.o)
+ifeq ($(MICROPY_PY_FIR), 1)
+MPY_CFLAGS += -DMICROPY_PY_FIR=1
+MPY_MKARGS += MICROPY_PY_FIR=1
+endif
 
-# Add driver object files.
-MPY_FIRM_OBJ += $(wildcard $(BUILD)/$(MICROPY_DIR)/drivers/*.o)
-MPY_FIRM_OBJ += $(wildcard $(BUILD)/$(MICROPY_DIR)/drivers/**/*.o)
+ifeq ($(MICROPY_PY_WINC1500), 1)
+MPY_CFLAGS += -DMICROPY_PY_WINC1500=1
+MPY_MKARGS += MICROPY_PY_WINC1500=1
+MPY_PENDSV_ENTRIES += PENDSV_DISPATCH_WINC,
+endif
 
-# Add C user modules.
-MPY_FIRM_OBJ += $(wildcard $(BUILD)/$(MICROPY_DIR)/modules/*.o)
-MPY_FIRM_OBJ += $(wildcard $(BUILD)/$(MICROPY_DIR)/modules/**/*.o)
-MPY_FIRM_OBJ += $(wildcard $(BUILD)/$(MICROPY_DIR)/ports/$(PORT)/modules/*.o)
+ifeq ($(MICROPY_PY_IMU), 1)
+MPY_CFLAGS += -DMICROPY_PY_IMU=1
+MPY_MKARGS += MICROPY_PY_IMU=1
+endif
 
-# Add lwIP core, netif, apps, and related network modules
+ifeq ($(MICROPY_PY_CRC), 1)
+MPY_CFLAGS += -DMICROPY_PY_CRC=1
+MPY_MKARGS += MICROPY_PY_CRC=1
+endif
+
+ifeq ($(MICROPY_PY_BTREE), 1)
+MPY_CFLAGS += -DMICROPY_PY_BTREE=1
+MPY_MKARGS += MICROPY_PY_BTREE=1
+endif
+
+ifeq ($(MICROPY_PY_TOF), 1)
+MPY_CFLAGS += -DMICROPY_PY_TOF=1
+MPY_MKARGS += MICROPY_PY_TOF=1
+endif
+
+ifeq ($(MICROPY_PY_AUDIO), 1)
+MPY_CFLAGS += -DMICROPY_PY_AUDIO=1
+MPY_MKARGS += MICROPY_PY_AUDIO=1
+endif
+
+ifeq ($(MICROPY_PY_DISPLAY), 1)
+MPY_CFLAGS += -DMICROPY_PY_DISPLAY=1
+MPY_MKARGS += MICROPY_PY_DISPLAY=1
+endif
+
+ifeq ($(MICROPY_PY_TV), 1)
+MPY_CFLAGS += -DMICROPY_PY_TV=1
+MPY_MKARGS += MICROPY_PY_TV=1
+endif
+
+ifeq ($(CUBEAI), 1)
+MPY_CFLAGS += -DMICROPY_PY_CUBEAI=1
+MPY_MKARGS += MICROPY_PY_CUBEAI=1
+endif
+
+ifeq ($(MICROPY_PY_ML), 1)
+MPY_CFLAGS += -DMICROPY_PY_ML=1
+MPY_MKARGS += MICROPY_PY_ML=1
+endif
+
+ifeq ($(MICROPY_PY_ML_TFLM), 1)
+MPY_CFLAGS += -DMICROPY_PY_ML_TFLM=1
+MPY_MKARGS += MICROPY_PY_ML_TFLM=1
+endif
+
+ifeq ($(MICROPY_PY_ML_STAI), 1)
+MPY_CFLAGS += -DMICROPY_PY_ML_STAI=1
+MPY_MKARGS += MICROPY_PY_ML_STAI=1
+endif
+
+ifeq ($(MICROPY_PY_UNITTEST), 1)
+MPY_CFLAGS += -DMICROPY_PY_UNITTEST=1
+MPY_MKARGS += MICROPY_PY_UNITTEST=1
+endif
+
+ifeq ($(MICROPY_PY_UMALLOC), 1)
+MPY_CFLAGS += -DMICROPY_PY_UMALLOC=1
+MPY_MKARGS += MICROPY_PY_UMALLOC=1
+endif
+
+ifeq ($(MICROPY_PY_PROTOCOL), 1)
+MPY_CFLAGS += -DMICROPY_PY_PROTOCOL=1
+MPY_MKARGS += MICROPY_PY_PROTOCOL=1
+endif
+
+# +-----------------------------------------------------+
+# | lwIP core, netif, apps, and related network modules.|
+# +-----------------------------------------------------+
 ifeq ($(MICROPY_PY_LWIP), 1)
-MPY_FIRM_OBJ += $(addprefix $(BUILD)/$(MICROPY_DIR)/,\
-	mpnetworkport.o \
-    lib/lwip/src/core/*.o \
-    lib/lwip/src/core/*/*.o \
-    lib/lwip/src/netif/*.o \
-    lib/lwip/src/apps/*/*.o \
-)
+MPY_CFLAGS += -DMICROPY_PY_LWIP=1
+MPY_CFLAGS += -I$(TOP_DIR)/$(MICROPY_DIR)/lib/lwip/src/include
+MPY_CFLAGS += -I$(TOP_DIR)/$(MICROPY_DIR)/ports/$(PORT)/lwip_inc
+
+MPY_MKARGS += MICROPY_PY_LWIP=1
 endif
 
-# Add mbedTLS crypto and error libraries
+# +-----------------------------------------------------+
+# | SSL support and mbedTLS crypto libraries.           |
+# +-----------------------------------------------------+
 ifeq ($(MICROPY_SSL_MBEDTLS), 1)
-MPY_FIRM_OBJ += $(addprefix $(BUILD)/$(MICROPY_DIR)/,\
-    mbedtls/*.o \
-    lib/mbedtls/library/*.o \
-    lib/mbedtls_errors/*.o \
-)
+MPY_CFLAGS += -DMICROPY_PY_SSL=1
+MPY_CFLAGS += -DMICROPY_PY_SSL_ECDSA_SIGN_ALT=$(MICROPY_PY_SSL_ECDSA_SIGN_ALT)
+MPY_CFLAGS += -DMICROPY_SSL_MBEDTLS=1
+MPY_CFLAGS += -I$(TOP_DIR)/$(MICROPY_DIR)/lib/mbedtls/include
+
+MPY_MKARGS += MICROPY_PY_SSL=1
+MPY_MKARGS += MICROPY_PY_SSL_ECDSA_SIGN_ALT=$(MICROPY_PY_SSL_ECDSA_SIGN_ALT)
+MPY_MKARGS += MICROPY_SSL_MBEDTLS=1
 endif
 
-# Add CYW43 Wi-Fi driver and network glue
+# +-----------------------------------------------------+
+# | CYW43 Wi-Fi driver and network glue.                |
+# +-----------------------------------------------------+
 ifeq ($(MICROPY_PY_NETWORK_CYW43), 1)
-MPY_FIRM_OBJ += $(addprefix $(BUILD)/$(MICROPY_DIR)/lib/cyw43-driver/,\
-    src/cyw43_bthci_uart.o \
-    src/cyw43_ctrl.o \
-    src/cyw43_lwip.o \
-    src/cyw43_ll.o \
-    src/cyw43_sdio.o \
-    src/cyw43_spi.o \
-    src/cyw43_stats.o \
-)
+MPY_CFLAGS += -DMICROPY_PY_NETWORK_CYW43=1
+MPY_MKARGS += MICROPY_PY_NETWORK_CYW43=1
 endif
 
-# Add NimBLE Bluetooth stack and glue code
+# +-----------------------------------------------------+
+# | NimBLE Bluetooth stack and glue code.               |
+# +-----------------------------------------------------+
 ifeq ($(MICROPY_BLUETOOTH_NIMBLE),1)
-MPY_FIRM_OBJ += $(addprefix $(BUILD)/$(MICROPY_DIR)/,\
-    mpbthciport.o \
-    mpnimbleport.o \
-    extmod/nimble/modbluetooth_nimble.o \
-    extmod/nimble/nimble/nimble_npl_os.o \
-    extmod/nimble/hal/hal_uart.o \
-)
+MPY_CFLAGS += -DMICROPY_PY_BLUETOOTH=1
+MPY_CFLAGS += -DMICROPY_PY_BLUETOOTH_USE_SYNC_EVENTS=1
+MPY_CFLAGS += -DMICROPY_BLUETOOTH_NIMBLE=1
 
-MPY_FIRM_OBJ += $(addprefix $(BUILD)/$(MICROPY_DIR)/lib/,\
-    mynewt-nimble/ext/tinycrypt/src/*.o \
-    mynewt-nimble/nimble/host/services/gap/src/*.o \
-    mynewt-nimble/nimble/host/services/gatt/src/*.o \
-    mynewt-nimble/nimble/host/src/*.o \
-    mynewt-nimble/nimble/host/util/src/*.o \
-    mynewt-nimble/nimble/transport/uart/src/*.o \
-    mynewt-nimble/porting/nimble/src/*.o \
-)
+MPY_MKARGS += MICROPY_PY_BLUETOOTH=1
+MPY_MKARGS += MICROPY_BLUETOOTH_NIMBLE=1
 endif
 
-# Add TinyUSB library objects.
+# +-----------------------------------------------------+
+# | TinyUSB library.                                    |
+# +-----------------------------------------------------+
 ifeq ($(OMV_USB_STACK_TINYUSB), 1)
-MPY_FIRM_OBJ += $(addprefix $(BUILD)/$(MICROPY_DIR)/lib/tinyusb/, \
-	src/*.o \
-	src/common/*.o \
-	src/device/*.o \
-	src/class/**/*.o \
-)
-
-MPY_FIRM_OBJ += \
-    $(wildcard $(BUILD)/$(MICROPY_DIR)/lib/tinyusb/src/portable/**/**/*.o)
+MPY_CFLAGS += -DMICROPY_HW_TINYUSB_STACK=1
+MPY_CFLAGS += -I$(TOP_DIR)/$(MICROPY_DIR)/lib/tinyusb/src
+MPY_CFLAGS += -I$(TOP_DIR)/$(MICROPY_DIR)/shared/tinyusb
 endif
 
-# Add oofatfs library
-MPY_FIRM_OBJ += $(wildcard $(BUILD)/$(MICROPY_DIR)/lib/oofatfs/*.o)
+# +-----------------------------------------------------+
+# | oofatfs library.                                    |
+# +-----------------------------------------------------+
+MPY_CFLAGS += -I$(TOP_DIR)/$(MICROPY_DIR)/lib/oofatfs
 
-# Add OpenAMP metal layer and remoteproc/rpmsg stack
-ifeq ($(MICROPY_PY_OPENAMP),1)
-MPY_FIRM_OBJ += $(addprefix $(BUILD)/$(MICROPY_DIR)/openamp/metal/,\
-    device.o \
-    dma.o \
-    init.o \
-    io.o \
-    irq.o \
-    log.o \
-    shmem.o \
-    softirq.o \
-    version.o \
-    system/micropython/condition.o \
-    system/micropython/device.o \
-    system/micropython/io.o \
-    system/micropython/irq.o \
-    system/micropython/shmem.o \
-    system/micropython/time.o \
-)
+# +-----------------------------------------------------+
+# | OpenAMP metal layer and remoteproc/rpmsg stack.     |
+# +-----------------------------------------------------+
+# Always export these flags to override default board config
+ifeq (1, 1)
+MICROPY_PY_OPENAMP ?= 0
+MICROPY_PY_OPENAMP_REMOTEPROC ?= 0
 
-MPY_FIRM_OBJ += $(addprefix $(BUILD)/$(MICROPY_DIR)/,\
-    mpmetalport.o \
-    mpremoteprocport.o \
-    lib/open-amp/lib/virtio/virtio.o \
-    lib/open-amp/lib/virtio/virtqueue.o \
-    lib/open-amp/lib/virtio_mmio/virtio_mmio_drv.o \
-    lib/open-amp/lib/rpmsg/rpmsg.o \
-    lib/open-amp/lib/rpmsg/rpmsg_virtio.o \
-    lib/open-amp/lib/remoteproc/elf_loader.o \
-    lib/open-amp/lib/remoteproc/remoteproc.o \
-    lib/open-amp/lib/remoteproc/remoteproc_virtio.o \
-    lib/open-amp/lib/remoteproc/rsc_table_parser.o \
-)
+MPY_CFLAGS += -DMICROPY_PY_OPENAMP=$(MICROPY_PY_OPENAMP)
+MPY_CFLAGS += -DMICROPY_PY_OPENAMP_REMOTEPROC=$(MICROPY_PY_OPENAMP_REMOTEPROC)
+
+MPY_MKARGS += MICROPY_PY_OPENAMP=$(MICROPY_PY_OPENAMP)
+MPY_MKARGS += MICROPY_PY_OPENAMP_REMOTEPROC=$(MICROPY_PY_OPENAMP_REMOTEPROC)
 endif
 
-# Add ULAB NumPy/SciPy-like modules
+# +-----------------------------------------------------+
+# | ULAB NumPy/SciPy-like modules.                     |
+# +-----------------------------------------------------+
 ifeq ($(MICROPY_PY_ULAB), 1)
-MPY_FIRM_OBJ += $(addprefix $(BUILD)/$(MICROPY_DIR)/modules/ulab/code/,\
-    ndarray.o \
-    ndarray_operators.o \
-    ndarray_properties.o \
-    numpy/approx.o \
-    numpy/bitwise.o \
-    numpy/carray/carray.o \
-    numpy/carray/carray_tools.o \
-    numpy/compare.o \
-    numpy/create.o \
-    numpy/fft/fft.o \
-    numpy/fft/fft_tools.o \
-    numpy/filter.o \
-    numpy/io/io.o \
-    numpy/linalg/linalg.o \
-    numpy/linalg/linalg_tools.o \
-    numpy/ndarray/ndarray_iter.o \
-    numpy/numerical.o \
-    numpy/numpy.o \
-    numpy/poly.o \
-    numpy/random/random.o \
-    numpy/stats.o \
-    numpy/transform.o \
-    numpy/vector.o \
-    scipy/integrate/integrate.o \
-    scipy/linalg/linalg.o \
-    scipy/optimize/optimize.o \
-    scipy/scipy.o \
-    scipy/signal/signal.o \
-    scipy/special/special.o \
-    ulab.o \
-    ulab_tools.o \
-    user/user.o \
-    utils/utils.o \
-)
+MPY_CFLAGS += -DMICROPY_PY_ULAB=1
+MPY_CFLAGS += -DULAB_CONFIG_FILE="\"$(OMV_BOARD_CONFIG_DIR)/ulab_config.h\""
+MPY_MKARGS += MICROPY_PY_ULAB=1
 endif
 
-# Add board object files (board.o, board_init etc...)
-MPY_FIRM_OBJ += $(wildcard $(BUILD)/$(MICROPY_DIR)/boards/$(TARGET)/*.o)
+# +-----------------------------------------------------+
+# | MicroPython common includes and flags               |
+# +-----------------------------------------------------+
+MPY_CFLAGS += -I$(BUILD)/$(MICROPY_DIR)
+MPY_CFLAGS += -I$(TOP_DIR)/$(MICROPY_DIR)
+MPY_CFLAGS += -I$(TOP_DIR)/$(MICROPY_DIR)/py
+MPY_CFLAGS += -I$(TOP_DIR)/$(MICROPY_DIR)/shared/runtime
+
+MPY_CFLAGS += -DMICROPY_HW_USB_VID=$(OMV_USB_VID)
+MPY_CFLAGS += -DMICROPY_HW_USB_PID=$(OMV_USB_PID)
+MPY_CFLAGS += -DMP_CONFIGFILE=\<$(OMV_PORT_DIR)/mp_config.h\>
+
+MPY_PENDSV_ENTRIES := $(shell echo $(MPY_PENDSV_ENTRIES) | tr -d '[:space:]')
+MPY_CFLAGS += -DMICROPY_BOARD_PENDSV_ENTRIES="$(MPY_PENDSV_ENTRIES)"
+
+# +-----------------------------------------------------+
+# | MicroPython build rules.                            |
+# +-----------------------------------------------------+
+.DEFAULT_GOAL := all
+MPY_MAKE_FILE ?=
+MPY_MAKE_TARGET ?=
+MPY_LIB = $(BUILD)/lib/libmicropython.a
+
+.PHONY: FORCE
+$(MPY_LIB): FORCE | FIRM_DIRS
+	$(MAKE) -C $(MICROPY_DIR)/ports/$(PORT) $(MPY_MAKE_FILE) \
+        BUILD=$(BUILD)/$(MICROPY_DIR) $(MPY_MKARGS) $(MPY_MAKE_TARGET)
+	$(ECHO) "AR $@"
+	$(RM) -f $@
+	$(AR) rcs $@ $$(find $(BUILD)/$(MICROPY_DIR) -name '*.o' \
+        ! -path '$(BUILD)/$(MICROPY_DIR)$(TOP_DIR)/*' \
+        ! -name 'main.*' \
+        ! -name 'pendsv.*' \
+        $(MPY_LIB_EXCLUDE))
+
+LIBS += -Wl,--whole-archive $(MPY_LIB) -Wl,--no-whole-archive
+
+$(OMV_FIRM_OBJ): | $(MPY_LIB)

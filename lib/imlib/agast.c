@@ -13,12 +13,12 @@
  */
 #include "imlib.h"
 #if defined(IMLIB_ENABLE_AGAST) && !defined(OMV_NO_GPL)
-#include "fb_alloc.h"
 #include "gc.h"
+#include "umalloc.h"
 
 #define MAX_ROW          (480u)
 #define MIN_MEM          (10 * 1024)
-#define MAX_CORNERS      (2000u)
+#define MAX_CORNERS      (500u)
 #define Compare(X, Y)    ((X) >= (Y))
 
 typedef struct {
@@ -76,13 +76,13 @@ void agast_detect(image_t *image, array_t *keypoints, int threshold, rectangle_t
     if (num_corners) {
         // Score corners
         for (int i = 0; i < num_corners; i++) {
-            corners[i].score = agast58_score(image->pixels + (corners[i].y * image->w + corners[i].x), threshold);
+            corners[i].score = agast58_score(image->data + (corners[i].y * image->w + corners[i].x), threshold);
         }
         // Non-max suppression
         nonmax_suppression(corners, num_corners, keypoints);
     }
     // Free corners;
-    fb_free();
+    uma_free(corners);
 }
 
 static void nonmax_suppression(corner_t *corners, int num_corners, array_t *keypoints) {
@@ -100,7 +100,7 @@ static void nonmax_suppression(corner_t *corners, int num_corners, array_t *keyp
     /* Find where each row begins (the corners are output in raster scan order).
        A beginning of -1 signifies that there are no corners on that row. */
     last_row = corners[sz - 1].y;
-    row_start = fb_alloc((last_row + 1) * sizeof(uint16_t), FB_ALLOC_NO_HINT);
+    row_start = uma_malloc((last_row + 1) * sizeof(uint16_t), 0);
 
     for (int i = 0; i < last_row + 1; i++) {
         row_start[i] = -1;
@@ -190,7 +190,7 @@ static void nonmax_suppression(corner_t *corners, int num_corners, array_t *keyp
     }
 
     // Free temp rows.
-    fb_free();
+    uma_free(row_start);
 }
 
 // *INDENT-OFF*
@@ -214,11 +214,11 @@ static corner_t *agast58_detect(image_t *img, int b, int* num_corners, rectangle
 	width=s_width;
 
     // Try to alloc MAX_CORNERS or the actual max corners we can alloc.
-    int max_corners = IM_MIN(MAX_CORNERS, (fb_avail() / sizeof(corner_t)));
-    corner_t *corners = (corner_t*) fb_alloc(max_corners * sizeof(corner_t), FB_ALLOC_NO_HINT);
+    corner_t *corners = (corner_t*) uma_malloc(MAX_CORNERS * sizeof(corner_t), 0);
 
 	for(y=roi->y+1; y < ysizeB; y++)
-	{										
+	{
+		imlib_poll_events();
 		x=roi->x;
 		while(1)							
 		{									
@@ -229,7 +229,7 @@ homogeneous:
 				break;
 			else
 			{
-				register const unsigned char* const p = img->pixels + y*width + x;
+				register const unsigned char* const p = img->data + y*width + x;
 				register const int cb = *p + b;
 				register const int c_b = *p - b;
 				if(p[offset0] > cb)
@@ -565,7 +565,7 @@ structured:
 				break;
 			else
 			{
-				register const unsigned char* const p = img->pixels + y*width + x;
+				register const unsigned char* const p = img->data + y*width + x;
 				register const int cb = *p + b;
 				register const int c_b = *p - b;
 				if(p[offset0] > cb)
@@ -909,14 +909,14 @@ structured:
 success_homogeneous:
 			corners[total].x = x;				
 			corners[total].y = y;				
-			if(++total == max_corners) {
+			if(++total == MAX_CORNERS) {
                 goto done;
             }
 			goto homogeneous;				
 success_structured:
 			corners[total].x = x;				
 			corners[total].y = y;				
-			if(++total == max_corners) {
+			if(++total == MAX_CORNERS) {
                 goto done;
             }
 			goto structured;				

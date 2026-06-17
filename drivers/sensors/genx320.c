@@ -23,7 +23,7 @@
  *
  * GENX320 driver.
  */
-#include "omv_boardconfig.h"
+#include "board_config.h"
 #if (OMV_GENX320_ENABLE == 1)
 
 #include <stdint.h>
@@ -34,6 +34,7 @@
 #include "framebuffer.h"
 #include "omv_i2c.h"
 #include "omv_csi.h"
+#include "genx320.h"
 
 #include "evt_2_0.h"
 #include "psee_genx320.h"
@@ -81,7 +82,7 @@ typedef struct genx_state {
     int32_t brightness;
     uint64_t event_time_us;
     const struct issd *issd;
-    genx_mode_t mode;
+    genx320_mode_t mode;
     AFK_HandleTypeDef psee_afk;
     STC_HandleTypeDef psee_stc;
     ec_event_t *events;
@@ -89,7 +90,7 @@ typedef struct genx_state {
 
 static genx_state_t genx = {};
 
-static int set_active_mode(omv_csi_t *csi, genx_mode_t mode, int framesize);
+static int set_active_mode(omv_csi_t *csi, genx320_mode_t mode, int framesize);
 
 static int reset(omv_csi_t *csi) {
     genx_state_t *genx = csi->priv;
@@ -532,7 +533,20 @@ static int ioctl(omv_csi_t *csi, int request, va_list ap) {
             genx->events = (ec_event_t *) va_arg(ap, ec_event_t *);
 
             image_t image;
-            ret = omv_csi_snapshot(csi, &image, 0);
+            ret = omv_csi_snapshot(csi, &image, OMV_CSI_FLAG_NO_UPDATE);
+            break;
+        }
+        case OMV_CSI_IOCTL_GENX320_READ_EVENTS_RAW: {
+            if (omv_csi_get_cropped(csi)) {
+                return OMV_CSI_ERROR_CAPTURE_FAILED;
+            }
+
+            if (csi->transpose) {
+                return OMV_CSI_ERROR_CAPTURE_FAILED;
+            }
+
+            image_t *img = (image_t *) va_arg(ap, image_t *);
+            ret = omv_csi_snapshot(csi, img, OMV_CSI_FLAG_NO_POST | OMV_CSI_FLAG_NO_UPDATE);
             break;
         }
         case OMV_CSI_IOCTL_GENX320_CALIBRATE: {
@@ -547,7 +561,7 @@ static int ioctl(omv_csi_t *csi, int request, va_list ap) {
                 return OMV_CSI_ERROR_CAPTURE_FAILED;
             }
 
-            uint8_t *histogram = fb_alloc0(ACTIVE_SENSOR_SIZE, FB_ALLOC_NO_HINT);
+            uint8_t *histogram = uma_calloc(ACTIVE_SENSOR_SIZE, 0);
 
             // Collect events to calibrate hot pixels.
             for (uint32_t i = 0; i < event_count; ) {
@@ -555,8 +569,9 @@ static int ioctl(omv_csi_t *csi, int request, va_list ap) {
                 mp_printf(MP_PYTHON_PRINTER, "CSI: Calibrating - %d%%\n", ((i * 50) / event_count));
 
                 image_t image;
-                ret = omv_csi_snapshot(csi, &image, OMV_CSI_FLAG_NO_POST);
+                ret = omv_csi_snapshot(csi, &image, OMV_CSI_FLAG_NO_POST | OMV_CSI_FLAG_NO_UPDATE);
                 if (ret < 0) {
+                    uma_free(histogram);
                     return ret;
                 }
 
@@ -595,7 +610,7 @@ static int ioctl(omv_csi_t *csi, int request, va_list ap) {
             }
 
             ret = disable_hot_pixels(csi, histogram, sigma);
-            fb_free();
+            uma_free(histogram);
             break;
         }
         default: {
@@ -677,7 +692,7 @@ static int post_process_event(omv_csi_t *csi, image_t *image, uint32_t flags) {
     return valid_count;
 }
 
-static int set_active_mode(omv_csi_t *csi, genx_mode_t mode, int framesize) {
+static int set_active_mode(omv_csi_t *csi, genx320_mode_t mode, int framesize) {
     genx_state_t *genx = csi->priv;
 
     if (genx->issd) {

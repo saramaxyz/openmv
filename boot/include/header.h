@@ -33,7 +33,7 @@
 #ifndef __OMV_BOOT_HEADER_H__
 #define __OMV_BOOT_HEADER_H__
 
-#include "omv_boardconfig.h"
+#include "board_config.h"
 
 // Boot magic value (also used for forced boot entry).
 #ifndef OMV_BOOT_MAGIC_VALUE
@@ -48,7 +48,7 @@
 // Bootloader version numbers.
 #define OMV_BOOT_VERSION_MAJOR          (1)
 #define OMV_BOOT_VERSION_MINOR          (0)
-#define OMV_BOOT_VERSION_PATCH          (2)
+#define OMV_BOOT_VERSION_PATCH          (3)
 
 #ifndef LINKER_SCRIPT
 #include <stdint.h>

@@ -28,12 +28,9 @@
 #include "mpprint.h"
 #include "fmath.h"
 #include "framebuffer.h"
-#include "omv_boardconfig.h"
+#include "board_config.h"
 #include "omv_protocol.h"
-
-// Main framebuffer memory
-extern char _fb_memory_start;
-extern char _fb_memory_end;
+#include "umalloc.h"
 
 // Streaming buffer memory
 extern char _sb_memory_start;
@@ -47,8 +44,7 @@ void framebuffer_init0() {
     bool enabled = framebuffer_get(FB_STREAM_ID)->enabled;
 
     // Initialize the main framebuffer.
-    framebuffer_init(framebuffer_get(FB_MAINFB_ID), &_fb_memory_start,
-                     &_fb_memory_end - &_fb_memory_start, false, true);
+    framebuffer_init(framebuffer_get(FB_MAINFB_ID), NULL, 0, true, true);
 
     // Initialize the streaming buffer.
     framebuffer_init(framebuffer_get(FB_STREAM_ID), &_sb_memory_start,
@@ -89,10 +85,10 @@ void framebuffer_to_image(framebuffer_t *fb, image_t *img) {
 
         // For streaming buffers (no queues), use raw_base directly
         if (fb->used_queue == NULL) {
-            img->pixels = (uint8_t *) fb->raw_base;
+            img->data = (uint8_t *) fb->raw_base;
         } else {
             vbuffer_t *buffer = framebuffer_acquire(fb, FB_FLAG_USED | FB_FLAG_PEEK);
-            img->pixels = (buffer == NULL) ? NULL : buffer->data;
+            img->data = (buffer == NULL) ? NULL : buffer->data;
         }
     }
 }
@@ -111,14 +107,12 @@ void framebuffer_from_image(framebuffer_t *fb, image_t *img) {
     }
 }
 
-
 framebuffer_t *framebuffer_get(size_t id) {
     if (id >= FB_MAX_ID) {
         return NULL;
     }
     return &framebuffers[id];
 }
-
 
 char *framebuffer_pool_start(framebuffer_t *fb, size_t buf_count) {
     size_t qsize = (buf_count <= 3) ? 0 : queue_calc_size(buf_count);
@@ -161,41 +155,45 @@ void framebuffer_flush(framebuffer_t *fb) {
     }
 }
 
-int framebuffer_resize(framebuffer_t *fb, size_t count, size_t frame_size, bool expand) {
-    size_t buf_size = 0;
+int framebuffer_resize(framebuffer_t *fb, size_t count, size_t frame_size) {
     // Queue size given the requested buffer count.
     size_t queue_size = queue_calc_size(count);
 
-    // Maximum usable memory size without queues.
-    size_t min_size = frame_size + sizeof(vbuffer_t);
-    size_t max_size = fb->raw_size - queue_size * 2;
+    // Minimum single buffer size including vbuffer.
+    size_t buf_size = OMV_ALIGN_TO(frame_size + sizeof(vbuffer_t), FRAMEBUFFER_ALIGNMENT);
 
-    // Use the frame buffer memory for big queues.
-    char *queue_memory = (count > 3) ? fb->raw_base : fb->raw_static;
+    // Minimum total size including queue overhead.
+    size_t min_size = buf_size * count + queue_size * 2;
 
-    // Calculate a single buffer size (including vbuffer header).
-    if (!expand) {
-        // No expansion: buffer size equals frame size plus header.
-        buf_size = OMV_ALIGN_TO(min_size, FRAMEBUFFER_ALIGNMENT);
-    } else if (fb->dynamic) {
-        // Expanding a dynamic FB: divide the raw buffer size evenly.
-        buf_size = OMV_ALIGN_DOWN(max_size / count, FRAMEBUFFER_ALIGNMENT);
-    } else {
-        // Expanding a static FB: calculate the free FB memory size.
-        size_t fb_size = fb_alloc_sp() - framebuffer_pool_start(fb, count);
-        max_size = IM_MIN(max_size, fb_size);
-        buf_size = OMV_ALIGN_DOWN(max_size / count, FRAMEBUFFER_ALIGNMENT);
+    if (fb->dynamic) {
+        // If a buffer can't grow in place, a new block is allocated first before
+        // the old one gets free'd, which could easily fail with big allocations.
+        // Free the framebuffer first and use malloc to ensure this doesn't fail.
+        if (fb->raw_base) {
+            uma_free(fb->raw_base);
+            fb->raw_base = NULL;
+        }
+
+        void *raw_base = uma_malign(min_size, FRAMEBUFFER_ALIGNMENT, UMA_PERSIST | UMA_MAYBE);
+        if (raw_base == NULL) {
+            return -1;
+        } else {
+            fb->raw_size = min_size;
+            fb->raw_base = raw_base;
+        }
     }
 
-    // Ensure that the buffer size is reasonable.
-    if (buf_size < min_size || buf_size * count > max_size) {
+    // Ensure that the raw buffer is large enough.
+    if (min_size > fb->raw_size) {
         return -1;
     }
 
     // Initialize the frame buffer.
-    fb->expanded = expand;
     fb->buf_count = count;
     fb->buf_size = buf_size - sizeof(vbuffer_t);
+
+    // Use the frame buffer memory for big queues.
+    char *queue_memory = (count > 3) ? fb->raw_base : fb->raw_static;
 
     // Initialize the buffer queues.
     queue_init(&fb->free_queue, count, &queue_memory[queue_size * 0]);
@@ -265,6 +263,20 @@ void framebuffer_update_preview(image_t *src) {
     static int overflow_count = 0;
     framebuffer_t *fb = framebuffer_get(FB_STREAM_ID);
 
+    // Update FPS tracking (EMA of frame time in ms).
+    uint32_t now = mp_hal_ticks_ms();
+    if (fb->fps_last_ms) {
+        uint32_t delta = now - fb->fps_last_ms;
+        if (delta > 0) {
+            if (fb->fps_frame_time > 0.0f) {
+                fb->fps_frame_time = fb->fps_frame_time * 0.9f + delta * 0.1f;
+            } else {
+                fb->fps_frame_time = delta;
+            }
+        }
+    }
+    fb->fps_last_ms = now;
+
     // Check if the streaming buffer is disabled, image is NULL or format is not set.
     if (!fb->enabled || !src->data || src->pixfmt == PIXFORMAT_INVALID) {
         return;
@@ -279,14 +291,16 @@ void framebuffer_update_preview(image_t *src) {
     framebuffer_header_t *header = (framebuffer_header_t *) fb->raw_base;
     uint8_t *frame_data = (uint8_t *) fb->raw_base + sizeof(framebuffer_header_t);
     size_t available_size = fb->raw_size - sizeof(framebuffer_header_t);
+    bool overflow = false;
 
     if (src->is_compressed) {
         if (src->size > available_size) {
             framebuffer_from_image(fb, NULL);
             mp_printf(MP_PYTHON_PRINTER, "\x1b[40O\n");
+            overflow = true;
         } else {
             framebuffer_from_image(fb, src);
-            memcpy(frame_data, src->pixels, src->size);
+            memcpy(frame_data, src->data, src->size);
         }
         goto exit_cleanup;
     }
@@ -296,10 +310,9 @@ void framebuffer_update_preview(image_t *src) {
         .h = src->h,
         .pixfmt = PIXFORMAT_JPEG,
         .size = available_size,
-        .pixels = frame_data
+        .data = frame_data
     };
 
-    bool overflow = false;
     bool raw_stream = src->is_mutable && fb->raw_enabled && fb->raw_w && fb->raw_h;
 
     if (raw_stream) {
@@ -308,7 +321,7 @@ void framebuffer_update_preview(image_t *src) {
         // Down-scale the frame (if necessary) and send the raw frame.
         dst.pixfmt = src->pixfmt;
         if (src->w <= fb->raw_w && src->h <= fb->raw_h && image_size(src) <= available_size) {
-            memcpy(dst.pixels, src->pixels, image_size(src));
+            memcpy(dst.data, src->data, image_size(src));
         } else {
             float scale = IM_MIN((fb->raw_w / (float) src->w),
                                  (fb->raw_h / (float) src->h));
@@ -366,9 +379,14 @@ exit_cleanup:
     header->pixfmt = fb->pixfmt;
     header->size = fb->is_compressed ? fb->size : fb->bpp;
     header->offset = sizeof(framebuffer_header_t);
+    header->fps = (fb->fps_frame_time > 0.0f) ? 1000.0f / fb->fps_frame_time : 0.0f;
 
     // Unlock the streaming buffer.
-    mutex_unlock(&fb->lock, MUTEX_TID_OMV);
+    if (overflow) {
+        mutex_init0(&fb->lock);
+    } else {
+        mutex_unlock(&fb->lock, MUTEX_TID_OMV);
+    }
 
     #if MICROPY_PY_PROTOCOL
     omv_protocol_send_event(OMV_PROTOCOL_CHANNEL_ID_STREAM, OMV_PROTOCOL_EVENT_NOTIFY, false);

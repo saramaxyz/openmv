@@ -37,7 +37,7 @@
 #if defined(IMLIB_ENABLE_FIND_KEYPOINTS)
 #include "fmath.h"
 #include "arm_math.h"
-#include "fb_alloc.h"
+#include "umalloc.h"
 #include "file_utils.h"
 
 #define PATCH_SIZE     (31) // 31x31 pixels
@@ -322,7 +322,7 @@ static int comp_angle(image_t *img, kp_t *kp, float *a, float *b) {
     int step = img->w;
     int half_k = 31 / 2;
     int m_01 = 0, m_10 = 0;
-    uint8_t *center = img->pixels + (kp->y * img->w + kp->x);
+    uint8_t *center = img->data + (kp->y * img->w + kp->x);
 
     // Treat the center line differently, v=0
     for (int u = -half_k; u <= half_k; ++u) {
@@ -363,7 +363,7 @@ static void image_scale(image_t *src, image_t *dst) {
         int sy = (y * y_ratio) >> 16;
         for (int x = 0; x < dst->w; x++) {
             int sx = (x * x_ratio) >> 16;
-            dst->pixels[y * dst->w + x] = IM_TO_GS_PIXEL(src, sx, sy);
+            dst->data[y * dst->w + x] = IM_TO_GS_PIXEL(src, sx, sy);
         }
     }
 }
@@ -382,7 +382,7 @@ array_t *orb_find_keypoints(image_t *img, bool normalized, int threshold,
             .w = (int) roundf(img->w / scale),
             .h = (int) roundf(img->h / scale),
             .pixfmt = PIXFORMAT_GRAYSCALE,
-            .pixels = NULL
+            .data = NULL
         };
 
         // Add patch size to ROI
@@ -396,7 +396,7 @@ array_t *orb_find_keypoints(image_t *img, bool normalized, int threshold,
             break;
         }
 
-        img_scaled.pixels = fb_alloc(img_scaled.w * img_scaled.h, FB_ALLOC_NO_HINT);
+        img_scaled.data = uma_malloc(img_scaled.w * img_scaled.h, 0);
         // Down scale image
         image_scale(img, &img_scaled);
 
@@ -429,10 +429,10 @@ array_t *orb_find_keypoints(image_t *img, bool normalized, int threshold,
 #define GET_VALUE(idx)                                          \
     (x = (int) roundf(pattern[idx].x * a - pattern[idx].y * b), \
      y = (int) roundf(pattern[idx].x * b + pattern[idx].y * a), \
-     img_scaled.pixels[((kpt->y + y) * img_scaled.w) + (kpt->x + x)])
+     img_scaled.data[((kpt->y + y) * img_scaled.w) + (kpt->x + x)])
             #else
 #define GET_VALUE(idx) \
-    (img_scaled.pixels[((kpt->y + pattern[idx].y) * img_scaled.w) + (kpt->x + pattern[idx].x)])
+    (img_scaled.data[((kpt->y + pattern[idx].y) * img_scaled.w) + (kpt->x + pattern[idx].x)])
             #endif
 
             for (int i = 0; i < KDESC_SIZE; ++i, pattern += 16) {
@@ -493,7 +493,7 @@ array_t *orb_find_keypoints(image_t *img, bool normalized, int threshold,
         }
 
         // Free current scale
-        fb_free();
+        uma_free(img_scaled.data);
 
         if (normalized) {
             break;
@@ -630,7 +630,7 @@ int orb_filter_keypoints(array_t *kpts, rectangle_t *r, point_t *c) {
     r->w = r->h = 0;
     r->x = r->y = 20000;
 
-    float *kpts_dist = fb_alloc(kpts_size * sizeof(float), FB_ALLOC_NO_HINT);
+    float *kpts_dist = uma_malloc(kpts_size * sizeof(float), 0);
 
     // Find centroid
     for (int i = 0; i < kpts_size; i++) {
@@ -701,7 +701,7 @@ int orb_filter_keypoints(array_t *kpts, rectangle_t *r, point_t *c) {
     r->h = r->h - r->y;
 
     // Free distance array
-    fb_free();
+    uma_free(kpts_dist);
     return matches;
 }
 

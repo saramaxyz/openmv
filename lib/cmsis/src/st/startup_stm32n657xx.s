@@ -63,10 +63,28 @@ Reset_Handler:
   ldr r1,=0xFFF          // Load the value 0x3FF into r1
   str r1,[r0]            // Store directly to memory
 
+/* Zero-fill DTCM and ITCM to initialize ECC bits. */
+  ldr r0, =0x30000000
+  ldr r1, =0x30020000
+  movs r2, #0
+.Lzero_dtcm:
+  str r2, [r0], #4
+  cmp r0, r1
+  blt .Lzero_dtcm
+
+  ldr r0, =0x10000000
+  ldr r1, =0x10010000
+.Lzero_itcm:
+  str r2, [r0], #4
+  cmp r0, r1
+  blt .Lzero_itcm
+
+/* Set stack pointer */
   ldr   r0, =_sstack
   msr   MSPLIM, r0
   ldr   r0, =_estack
-  mov   sp, r0          /* set stack pointer */
+  mov   sp, r0
+
 /* Call the clock system initialization function.*/
   bl  SystemInit
 

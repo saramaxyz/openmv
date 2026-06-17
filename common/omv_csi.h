@@ -193,53 +193,54 @@ typedef enum {
 } omv_csi_framesize_t;
 
 typedef enum {
-    OMV_CSI_FLAG_UPDATE_FB      = (1 << 0),
+    OMV_CSI_FLAG_NO_UPDATE      = (1 << 0),
     OMV_CSI_FLAG_NON_BLOCK      = (1 << 1),
     OMV_CSI_FLAG_NO_POST        = (1 << 2),
     OMV_CSI_FLAG_IOCTL_ABORT    = (1 << 8),
 } omv_csi_flags_t;
 
 typedef enum {
-    OMV_CSI_IOCTL_SET_READOUT_WINDOW    = 0x00 | OMV_CSI_FLAG_IOCTL_ABORT,
-    OMV_CSI_IOCTL_GET_READOUT_WINDOW    = 0x01,
-    OMV_CSI_IOCTL_SET_TRIGGERED_MODE    = 0x02,
-    OMV_CSI_IOCTL_GET_TRIGGERED_MODE    = 0x03,
-    OMV_CSI_IOCTL_SET_FOV_WIDE          = 0x04,
-    OMV_CSI_IOCTL_GET_FOV_WIDE          = 0x05,
-    OMV_CSI_IOCTL_TRIGGER_AUTO_FOCUS    = 0x06,
-    OMV_CSI_IOCTL_PAUSE_AUTO_FOCUS      = 0x07,
-    OMV_CSI_IOCTL_RESET_AUTO_FOCUS      = 0x08,
-    OMV_CSI_IOCTL_WAIT_ON_AUTO_FOCUS    = 0x09,
-    OMV_CSI_IOCTL_SET_NIGHT_MODE        = 0x0A,
-    OMV_CSI_IOCTL_GET_NIGHT_MODE        = 0x0B,
-    OMV_CSI_IOCTL_LEPTON_GET_WIDTH      = 0x0C,
-    OMV_CSI_IOCTL_LEPTON_GET_HEIGHT     = 0x0D,
-    OMV_CSI_IOCTL_LEPTON_GET_RADIOMETRY = 0x0E,
-    OMV_CSI_IOCTL_LEPTON_GET_REFRESH    = 0x0F,
-    OMV_CSI_IOCTL_LEPTON_GET_RESOLUTION = 0x10,
-    OMV_CSI_IOCTL_LEPTON_RUN_COMMAND    = 0x11,
-    OMV_CSI_IOCTL_LEPTON_SET_ATTRIBUTE  = 0x12,
-    OMV_CSI_IOCTL_LEPTON_GET_ATTRIBUTE  = 0x13,
-    OMV_CSI_IOCTL_LEPTON_GET_FPA_TEMP   = 0x14,
-    OMV_CSI_IOCTL_LEPTON_GET_AUX_TEMP   = 0x15,
-    OMV_CSI_IOCTL_LEPTON_SET_MODE       = 0x16 | OMV_CSI_FLAG_IOCTL_ABORT,
-    OMV_CSI_IOCTL_LEPTON_GET_MODE       = 0x17,
-    OMV_CSI_IOCTL_LEPTON_SET_RANGE      = 0x18 | OMV_CSI_FLAG_IOCTL_ABORT,
-    OMV_CSI_IOCTL_LEPTON_GET_RANGE      = 0x19,
-    OMV_CSI_IOCTL_HIMAX_MD_ENABLE       = 0x1A,
-    OMV_CSI_IOCTL_HIMAX_MD_CLEAR        = 0x1B,
-    OMV_CSI_IOCTL_HIMAX_MD_WINDOW       = 0x1C | OMV_CSI_FLAG_IOCTL_ABORT,
-    OMV_CSI_IOCTL_HIMAX_MD_THRESHOLD    = 0x1D,
-    OMV_CSI_IOCTL_HIMAX_OSC_ENABLE      = 0x1E | OMV_CSI_FLAG_IOCTL_ABORT,
-    OMV_CSI_IOCTL_GET_RGB_STATS         = 0x1F,
-    OMV_CSI_IOCTL_GENX320_SET_BIASES    = 0x20,
-    OMV_CSI_IOCTL_GENX320_SET_BIAS      = 0x21,
-    OMV_CSI_IOCTL_GENX320_SET_AFK       = 0x22,
-    OMV_CSI_IOCTL_GENX320_SET_MODE      = 0x23,
-    OMV_CSI_IOCTL_GENX320_READ_EVENTS   = 0x24,
-    OMV_CSI_IOCTL_GENX320_CALIBRATE     = 0x25,
-    OMV_CSI_IOCTL_GENX320_SET_STC       = 0x26,
-    OMV_CSI_IOCTL_UPDATE_AGC_AEC        = 0x7F
+    OMV_CSI_IOCTL_SET_READOUT_WINDOW      = 0x00 | OMV_CSI_FLAG_IOCTL_ABORT,
+    OMV_CSI_IOCTL_GET_READOUT_WINDOW      = 0x01,
+    OMV_CSI_IOCTL_SET_TRIGGERED_MODE      = 0x02,
+    OMV_CSI_IOCTL_GET_TRIGGERED_MODE      = 0x03,
+    OMV_CSI_IOCTL_SET_FOV_WIDE            = 0x04,
+    OMV_CSI_IOCTL_GET_FOV_WIDE            = 0x05,
+    OMV_CSI_IOCTL_TRIGGER_AUTO_FOCUS      = 0x06,
+    OMV_CSI_IOCTL_PAUSE_AUTO_FOCUS        = 0x07,
+    OMV_CSI_IOCTL_RESET_AUTO_FOCUS        = 0x08,
+    OMV_CSI_IOCTL_WAIT_ON_AUTO_FOCUS      = 0x09,
+    OMV_CSI_IOCTL_SET_NIGHT_MODE          = 0x0A,
+    OMV_CSI_IOCTL_GET_NIGHT_MODE          = 0x0B,
+    OMV_CSI_IOCTL_LEPTON_GET_WIDTH        = 0x0C,
+    OMV_CSI_IOCTL_LEPTON_GET_HEIGHT       = 0x0D,
+    OMV_CSI_IOCTL_LEPTON_GET_RADIOMETRY   = 0x0E,
+    OMV_CSI_IOCTL_LEPTON_GET_REFRESH      = 0x0F,
+    OMV_CSI_IOCTL_LEPTON_GET_RESOLUTION   = 0x10,
+    OMV_CSI_IOCTL_LEPTON_RUN_COMMAND      = 0x11,
+    OMV_CSI_IOCTL_LEPTON_SET_ATTRIBUTE    = 0x12,
+    OMV_CSI_IOCTL_LEPTON_GET_ATTRIBUTE    = 0x13,
+    OMV_CSI_IOCTL_LEPTON_GET_FPA_TEMP     = 0x14,
+    OMV_CSI_IOCTL_LEPTON_GET_AUX_TEMP     = 0x15,
+    OMV_CSI_IOCTL_LEPTON_SET_MODE         = 0x16 | OMV_CSI_FLAG_IOCTL_ABORT,
+    OMV_CSI_IOCTL_LEPTON_GET_MODE         = 0x17,
+    OMV_CSI_IOCTL_LEPTON_SET_RANGE        = 0x18 | OMV_CSI_FLAG_IOCTL_ABORT,
+    OMV_CSI_IOCTL_LEPTON_GET_RANGE        = 0x19,
+    OMV_CSI_IOCTL_HIMAX_MD_ENABLE         = 0x1A,
+    OMV_CSI_IOCTL_HIMAX_MD_CLEAR          = 0x1B,
+    OMV_CSI_IOCTL_HIMAX_MD_WINDOW         = 0x1C | OMV_CSI_FLAG_IOCTL_ABORT,
+    OMV_CSI_IOCTL_HIMAX_MD_THRESHOLD      = 0x1D,
+    OMV_CSI_IOCTL_HIMAX_OSC_ENABLE        = 0x1E | OMV_CSI_FLAG_IOCTL_ABORT,
+    OMV_CSI_IOCTL_GET_RGB_STATS           = 0x1F,
+    OMV_CSI_IOCTL_GENX320_SET_BIASES      = 0x20,
+    OMV_CSI_IOCTL_GENX320_SET_BIAS        = 0x21,
+    OMV_CSI_IOCTL_GENX320_SET_AFK         = 0x22,
+    OMV_CSI_IOCTL_GENX320_SET_MODE        = 0x23,
+    OMV_CSI_IOCTL_GENX320_READ_EVENTS     = 0x24,
+    OMV_CSI_IOCTL_GENX320_CALIBRATE       = 0x25,
+    OMV_CSI_IOCTL_GENX320_SET_STC         = 0x26,
+    OMV_CSI_IOCTL_GENX320_READ_EVENTS_RAW = 0x27,
+    OMV_CSI_IOCTL_UPDATE_AGC_AEC          = 0x7F
 } omv_csi_ioctl_t;
 
 typedef enum {
@@ -267,35 +268,6 @@ typedef enum {
     OMV_CSI_ERROR_WOULD_BLOCK           = -21,
 } omv_csi_error_t;
 
-#if (OMV_GENX320_ENABLE == 1)
-typedef enum {
-    OMV_CSI_GENX320_MODE_HISTO,
-    OMV_CSI_GENX320_MODE_EVENT,
-} genx_mode_t;
-
-typedef enum {
-    OMV_CSI_GENX320_BIASES_DEFAULT,
-    OMV_CSI_GENX320_BIASES_LOW_LIGHT,
-    OMV_CSI_GENX320_BIASES_ACTIVE_MARKER,
-    OMV_CSI_GENX320_BIASES_LOW_NOISE,
-    OMV_CSI_GENX320_BIASES_HIGH_SPEED
-} omv_csi_genx320_biases_preset_t;
-
-typedef enum {
-    OMV_CSI_GENX320_BIAS_DIFF_OFF,
-    OMV_CSI_GENX320_BIAS_DIFF_ON,
-    OMV_CSI_GENX320_BIAS_FO,
-    OMV_CSI_GENX320_BIAS_HPF,
-    OMV_CSI_GENX320_BIAS_REFR
-} omv_csi_genx320_bias_t;
-
-typedef enum {
-    OMV_CSI_GENX320_STC_DISABLE,
-    OMV_CSI_GENX320_STC_ONLY,
-    OMV_CSI_GENX320_STC_TRAIL_ONLY,
-    OMV_CSI_GENX320_STC_TRAIL
-} omv_csi_stc_modes_t;
-#endif
 
 typedef struct _omv_csi omv_csi_t;
 
@@ -342,7 +314,6 @@ typedef struct _omv_csi {
         uint32_t vsync_pol  : 1;  // Vertical sync polarity.
         uint32_t hsync_pol  : 1;  // Horizontal sync polarity.
         uint32_t pixck_pol  : 1;  // Pixel clock edge.
-        uint32_t frame_sync : 1;  // Hardware frame sync.
         uint32_t mono_bpp   : 2;  // Grayscale bytes per pixel output.
         uint32_t rgb_swap   : 1;  // Byte-swap 2BPP RGB formats after capture.
         uint32_t yuv_swap   : 1;  // Byte-swap 2BPP YUV formats after capture.
@@ -383,6 +354,7 @@ typedef struct _omv_csi {
     omv_i2c_t *i2c;             // SCCB/I2C bus.
     framebuffer_t *fb;          // Frame buffer pointer
     omv_clk_t *clk;             // Clock controller.
+    omv_gpio_t fsync_pin;       // Frame sync pin.
     uint32_t clk_hz;            // Clock freqeuency request by this CSI.
     uint32_t reset_time_ms;     // To track elapsed time since hard-reset.
     uint32_t power_time_ms;     // To track elapsed time since power on.
@@ -404,6 +376,12 @@ typedef struct _omv_csi {
 
     // Resolution table
     uint16_t resolution[OMV_CSI_FRAMESIZE_MAX][2];
+
+    #ifdef OMV_CSI_HW_SCALE_ENABLE
+    // Sensor raw resolution output (i.e. before cropping and scaling).
+    uint16_t src_w;
+    uint16_t src_h;
+    #endif // OMV_CSI_HW_SCALE_ENABLE
 
     // Sensor function pointers
     int (*reset) (omv_csi_t *csi);
@@ -596,7 +574,7 @@ int omv_csi_set_auto_rotation(omv_csi_t *csi, bool enable);
 bool omv_csi_get_auto_rotation(omv_csi_t *csi);
 
 // Set the number of virtual frame buffers.
-int omv_csi_set_framebuffers(omv_csi_t *csi, size_t count, bool expand);
+int omv_csi_set_framebuffers(omv_csi_t *csi, size_t count);
 
 // Drop the next frame to match the current frame rate.
 void omv_csi_throttle_framerate(omv_csi_t *csi);

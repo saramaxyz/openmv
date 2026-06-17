@@ -30,7 +30,7 @@
  *
  * PixArt PAG7936 driver.
  */
-#include "omv_boardconfig.h"
+#include "board_config.h"
 #if (OMV_PAG7936_ENABLE == 1)
 
 #include <stdint.h>
@@ -85,17 +85,26 @@
 #define INTERFACE_POLARITY          (0x0EAF)
 #define SENSOR_OPMODE               (0x0008)
 #define SENSOR_OPMODE_RUN           (0x83)
-#define SENSOR_OPMODE_SUSPEND       (0x85)
+#define SENSOR_OPMODE_SUSPEND       (0x86)
 #define SENSOR_TRIGGER_FRAMENUM     (0x002E)
 #define SENSOR_TRIGGER_EN           (0x002F)
+#define SENSOR_TRIGGER_EN_FLAG      (0x01)
+#define SENSOR_TRIGGER_MODE_SOFT    (0x00)
+#define SENSOR_TRIGGER_MODE_GPIO0   (0x10)
+#define SENSOR_TRIGGER_MODE_GPIO1   (0x20)
+#define SENSOR_TRIGGER_MODE_GPIO2   (0x30)
 #define SENSOR_TG_EN                (0x0030)
 #define SENSOR_TG_EN_FLAG           (0x01)
 #define SENSOR_TRIGGER_MODE         (0x0031)
+#define SENSOR_TRIGGER_MODE_0       (0x02)
+#define SENSOR_TRIGGER_MODE_1       (0x03)
 #define SENSOR_SOFTWARE_TRIGGER     (0x00EA)
 #define ISP_EN_H                    (0x0800)
 #define ISP_EN_H_EN                 (0x01)
 #define ISP_TEST_MODE               (0x0801)
+#define DENOISE_EN                  (0x0882)
 #define ISP_TEST_MODE_RAMP          (0x04)
+#define R_RGB1_GRAY0                (0x0E08)
 #define ISP_WOI_EN                  (0x0E10)
 #define ISP_WOI_HSIZE_L             (0x0E11)
 #define ISP_WOI_HSIZE_H             (0x0E12)
@@ -148,7 +157,7 @@
 #define PAG7936_GAIN_SCALE          (16)
 #define PAG7936_GAIN_SCALE_F        ((PAG7936_GAIN_SCALE) * 1.0f)
 
-#define PAG7936_EXP_OFFSET          (80)
+#define PAG7936_EXP_MARGIN          (80)
 #define PAG7936_EXP_MIN             (80)
 #define PAG7936_EXP_DIV             (8)
 
@@ -168,7 +177,7 @@
 
 #if OMV_PAG7936_MIPI_CSI2
 #define PAG7936_WIDTH_ALIGN         (8)
-#define PAG7936_QVGA_FPS_MAX        (480)
+#define PAG7936_QVGA_FPS_MAX        (470)
 #define PAG7936_VGA_FPS_MAX         (240)
 #define PAG7936_HD_FPS_MAX          (120)
 #else
@@ -177,6 +186,14 @@
 #define PAG7936_VGA_FPS_MAX         (120)
 #define PAG7936_HD_FPS_MAX          (60)
 #endif
+
+typedef struct {
+    bool gain_auto;
+    bool expo_auto;
+    int framerate;
+} pag7936_state_t;
+
+static pag7936_state_t pag7936_state = {};
 
 static const uint16_t default_regs[][2] = {
     #if OMV_PAG7936_MIPI_CSI2
@@ -324,6 +341,10 @@ static const uint16_t default_regs[][2] = {
     { 0x0A35,   0x0D },
     { 0x000B,   0x02 },
     #endif
+    { 0x1400,   0x01 }, // AE auto mode (bit4=0), bit0 preserved at default
+    { 0x140C,   0x00 },
+    { 0x140D,   0x01 }, // AE_MAXGAIN = 256 (16x, hardware max)
+    { 0x0801,   0x00 }, // Disable ramp test pattern
     { 0x0810,   0x01 },
     { 0x0814,   0xB3 }, //R_center_rx[10:0]=691
     { 0x0815,   0x02 }, //R_center_rx[10:0]=691
@@ -378,19 +399,29 @@ static const uint16_t qvga_regs[][2] = {
     { AVERAGE_MODE,         0x02 },
     { ROW_AVERAGE_MODE,     0x00 },
     { COL_AVERAGE_MODE,     0x00 },
-    { ISP_WOI_EN,           0x00 },
+    { ISP_WOI_EN,           0x01 },
     { HSIZE_L,              0x44 },
     { HSIZE_H,              0x01 },
     { VSIZE_L,              0xCC },
     { VSIZE_H,              0x00 },
-    { WOI_HSIZE_L,          0x40 },
+    { WOI_HSIZE_L,          0x44 },
     { WOI_HSIZE_H,          0x01 },
-    { WOI_VSIZE_L,          0xC8 },
+    { WOI_VSIZE_L,          0xCC },
     { WOI_VSIZE_H,          0x00 },
-    { WOI_HSTART_L,         0x02 },
+    { WOI_HSTART_L,         0x00 },
     { WOI_HSTART_H,         0x00 },
-    { WOI_VSTART_L,         0x02 },
+    { WOI_VSTART_L,         0x00 },
     { WOI_VSTART_H,         0x00 },
+    { ISP_WOI_HSIZE_L,      0x40 }, //320
+    { ISP_WOI_HSIZE_H,      0x01 }, //320
+    { ISP_WOI_VSIZE_L,      0xC8 }, //200
+    { ISP_WOI_VSIZE_H,      0x00 }, //200
+    { ISP_WOI_HOFFSET_L,    0x02 }, //2
+    { ISP_WOI_HOFFSET_H,    0x00 }, //2
+    { ISP_WOI_VOFFSET_L,    0x02 }, //2
+    { ISP_WOI_VOFFSET_H,    0x00 }, //2
+    { DENOISE_EN,           0x00 }, //Denoise off
+    { R_RGB1_GRAY0,         0x01 }, //color
     { SENSOR_UPDATE,        0x80 },
     { 0x0000,               0x00 },
 };
@@ -400,19 +431,29 @@ static const uint16_t vga_regs[][2] = {
     { AVERAGE_MODE,         0x01 },
     { ROW_AVERAGE_MODE,     0x00 },
     { COL_AVERAGE_MODE,     0x00 },
-    { ISP_WOI_EN,           0x00 },
+    { ISP_WOI_EN,           0x01 },
     { HSIZE_L,              0x88 },
     { HSIZE_H,              0x02 },
     { VSIZE_L,              0x98 },
     { VSIZE_H,              0x01 },
-    { WOI_HSIZE_L,          0x80 },
+    { WOI_HSIZE_L,          0x88 },
     { WOI_HSIZE_H,          0x02 },
-    { WOI_VSIZE_L,          0x90 },
+    { WOI_VSIZE_L,          0x98 },
     { WOI_VSIZE_H,          0x01 },
-    { WOI_HSTART_L,         0x04 },
+    { WOI_HSTART_L,         0x00 },
     { WOI_HSTART_H,         0x00 },
-    { WOI_VSTART_L,         0x04 },
+    { WOI_VSTART_L,         0x00 },
     { WOI_VSTART_H,         0x00 },
+    { ISP_WOI_HSIZE_L,      0x80 }, //640
+    { ISP_WOI_HSIZE_H,      0x02 }, //640
+    { ISP_WOI_VSIZE_L,      0x90 }, //400
+    { ISP_WOI_VSIZE_H,      0x01 }, //400
+    { ISP_WOI_HOFFSET_L,    0x04 }, //4
+    { ISP_WOI_HOFFSET_H,    0x00 }, //4
+    { ISP_WOI_VOFFSET_L,    0x04 }, //4
+    { ISP_WOI_VOFFSET_H,    0x00 }, //4
+    { DENOISE_EN,           0x03 }, //Denoise on
+    { R_RGB1_GRAY0,         0x01 }, //color
     { SENSOR_UPDATE,        0x80 },
     { 0x0000,               0x00 },
 };
@@ -422,25 +463,83 @@ static const uint16_t hd_regs[][2] = {
     { AVERAGE_MODE,         0x00 },
     { ROW_AVERAGE_MODE,     0x00 },
     { COL_AVERAGE_MODE,     0x00 },
-    { ISP_WOI_EN,           0x00 },
+    { ISP_WOI_EN,           0x01 },
     { HSIZE_L,              0x10 },
     { HSIZE_H,              0x05 },
     { VSIZE_L,              0x30 },
     { VSIZE_H,              0x03 },
-    { WOI_HSIZE_L,          0x00 },
+    { WOI_HSIZE_L,          0x10 },
     { WOI_HSIZE_H,          0x05 },
-    { WOI_VSIZE_L,          0x20 },
+    { WOI_VSIZE_L,          0x30 },
     { WOI_VSIZE_H,          0x03 },
-    { WOI_HSTART_L,         0x08 },
+    { WOI_HSTART_L,         0x00 },
     { WOI_HSTART_H,         0x00 },
-    { WOI_VSTART_L,         0x08 },
+    { WOI_VSTART_L,         0x00 },
     { WOI_VSTART_H,         0x00 },
+    { ISP_WOI_HSIZE_L,      0x00 }, //1280
+    { ISP_WOI_HSIZE_H,      0x05 }, //1280
+    { ISP_WOI_VSIZE_L,      0x20 }, //800
+    { ISP_WOI_VSIZE_H,      0x03 }, //800
+    { ISP_WOI_HOFFSET_L,    0x08 }, //8
+    { ISP_WOI_HOFFSET_H,    0x00 }, //8
+    { ISP_WOI_VOFFSET_L,    0x08 }, //8
+    { ISP_WOI_VOFFSET_H,    0x00 }, //8
+    { DENOISE_EN,           0x03 }, //Denoise on
+    { R_RGB1_GRAY0,         0x01 }, //color
     { SENSOR_UPDATE,        0x80 },
     { 0x0000,               0x00 },
 };
 
+// Apply AE/AG hardware mode based on current manual/auto state.
+// gain: register value to write (already clamped), or -1 to freeze from sensor readback.
+// expo: exposure in sensor line units (already clamped), or -1 to freeze from sensor readback.
+static int ae_apply(omv_csi_t *csi, int gain, int expo) {
+    pag7936_state_t *state = csi->priv;
+    uint8_t reg;
+    uint8_t tmp;
+    int ret = omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL, 2, &reg, 1);
+
+    if (state->gain_auto && state->expo_auto) {
+        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL, 2, reg & ~AE_EXPO_MANUAL_AE_MANUAL_EN, 1);
+    } else {
+        if (gain < 0) {
+            uint8_t gainh, gainl;
+            ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, TOTAL_GAIN_10_8, 2, &gainh, 1);
+            ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, TOTAL_GAIN_7_0, 2, &gainl, 1);
+            gain = PAG7936_GAIN(gainh, gainl);
+        }
+
+        if (expo < 0) {
+            uint8_t exph, expm, expl;
+            ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXP_LINE_NUM_17_16, 2, &exph, 1);
+            ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXP_LINE_NUM_15_8, 2, &expm, 1);
+            ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXP_LINE_NUM_7_0, 2, &expl, 1);
+            expo = PAG7936_EXPOSURE(exph, expm, expl) / PAG7936_EXP_DIV;
+        }
+
+        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_GAIN_MANUAL_10_8, 2, &tmp, 1);
+        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_GAIN_MANUAL_10_8, 2, PAG7936_GAIN_H(tmp, gain), 1);
+        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_GAIN_MANUAL_7_0, 2, PAG7936_GAIN_L(gain), 1);
+
+        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL_17_16, 2, &tmp, 1);
+        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL_17_16, 2, PAG7936_EXPOSURE_H(tmp, expo), 1);
+        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL_15_8, 2, PAG7936_EXPOSURE_M(expo), 1);
+        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL_7_0, 2, PAG7936_EXPOSURE_L(expo), 1);
+
+        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL, 2, reg | AE_EXPO_MANUAL_AE_MANUAL_EN, 1);
+    }
+
+    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_UPDATE, 2, SENSOR_UPDATE_FLAG, 1);
+    return ret;
+}
+
 static int reset(omv_csi_t *csi) {
     int ret = 0;
+    pag7936_state_t *state = csi->priv;
+    state->gain_auto = true;
+    state->expo_auto = true;
+    state->framerate = PAG7936_HD_FPS_MAX;
+    csi->gainceiling = OMV_CSI_GAINCEILING_16X;
     // Write default registers
     for (int i = 0; default_regs[i][0] && ret == 0; i++) {
         ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, default_regs[i][0], 2, default_regs[i][1], 1);
@@ -452,7 +551,7 @@ static int sleep(omv_csi_t *csi, int enable) {
     int ret = omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_TG_EN, 2, SENSOR_TG_EN_FLAG, 1);
     ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_OPMODE, 2,
                              enable ? SENSOR_OPMODE_SUSPEND : SENSOR_OPMODE_RUN, 1);
-    return 0;
+    return ret;
 }
 
 static int read_reg(omv_csi_t *csi, uint16_t reg) {
@@ -486,19 +585,49 @@ static int set_pixformat(omv_csi_t *csi, pixformat_t pixformat) {
     }
 }
 
-static int set_framesize(omv_csi_t *csi, omv_csi_framesize_t framesize) {
+// Pick the largest native sensor mode that meets the requested framerate.
+static omv_csi_framesize_t get_framesize(omv_csi_t *csi, omv_csi_framesize_t target, int framerate) {
+    #ifndef OMV_CSI_HW_SCALE_ENABLE
+    return target;
+    #endif
+
+    uint32_t w = csi->resolution[target][0];
+    uint32_t h = csi->resolution[target][1];
+
+    if (w > csi->resolution[OMV_CSI_FRAMESIZE_VGA][0] ||
+        h > csi->resolution[OMV_CSI_FRAMESIZE_VGA][1] ||
+        framerate <= PAG7936_HD_FPS_MAX) {
+        return OMV_CSI_FRAMESIZE_HD;
+    }
+
+    if (w > csi->resolution[OMV_CSI_FRAMESIZE_QVGA][0] ||
+        h > csi->resolution[OMV_CSI_FRAMESIZE_QVGA][1] ||
+        framerate <= PAG7936_VGA_FPS_MAX) {
+        return OMV_CSI_FRAMESIZE_VGA;
+    }
+
+    return OMV_CSI_FRAMESIZE_QVGA;
+}
+
+static int configure(omv_csi_t *csi, omv_csi_framesize_t target, int framerate) {
+    pag7936_state_t *state = csi->priv;
     int ret = 0;
     const uint16_t(*regs)[2];
+    uint8_t reg;
+    omv_csi_framesize_t framesize = get_framesize(csi, target, framerate);
 
     switch (framesize) {
         case OMV_CSI_FRAMESIZE_HD:
             regs = hd_regs;
+            framerate = IM_MIN(framerate, PAG7936_HD_FPS_MAX);
             break;
         case OMV_CSI_FRAMESIZE_VGA:
             regs = vga_regs;
+            framerate = IM_MIN(framerate, PAG7936_VGA_FPS_MAX);
             break;
         case OMV_CSI_FRAMESIZE_QVGA:
             regs = qvga_regs;
+            framerate = IM_MIN(framerate, PAG7936_QVGA_FPS_MAX);
             break;
         default:
             return -1;
@@ -508,26 +637,10 @@ static int set_framesize(omv_csi_t *csi, omv_csi_framesize_t framesize) {
         ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, regs[i][0], 2, regs[i][1], 1);
     }
 
-    return ret;
-}
-
-static int set_framerate(omv_csi_t *csi, int framerate) {
-    uint8_t reg, exposure_us_17_16, exposure_us_15_8, exposure_us_7_0;
-    int ret = 0;
-
-    switch (csi->framesize) {
-        case OMV_CSI_FRAMESIZE_HD:
-            framerate = IM_MIN(framerate, PAG7936_HD_FPS_MAX);
-            break;
-        case OMV_CSI_FRAMESIZE_VGA:
-            framerate = IM_MIN(framerate, PAG7936_VGA_FPS_MAX);
-            break;
-        case OMV_CSI_FRAMESIZE_QVGA:
-            framerate = IM_MIN(framerate, PAG7936_QVGA_FPS_MAX);
-            break;
-        default:
-            return -1;
-    }
+    #ifdef OMV_CSI_HW_SCALE_ENABLE
+    csi->src_w = csi->resolution[framesize][0];
+    csi->src_h = csi->resolution[framesize][1];
+    #endif
 
     int32_t frame_time = FT_CLK / framerate;
 
@@ -536,64 +649,86 @@ static int set_framerate(omv_csi_t *csi, int framerate) {
     ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, FRAME_TIME_15_8, 2, PAG7936_FRAME_TIME_M(frame_time), 1);
     ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, FRAME_TIME_7_0, 2, PAG7936_FRAME_TIME_L(frame_time), 1);
 
-    ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL, 2, &reg, 1);
-
-    if (reg & AE_EXPO_MANUAL_AE_MANUAL_EN) {
-        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL_17_16, 2, &exposure_us_17_16, 1);
-        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL_15_8, 2, &exposure_us_15_8, 1);
-        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL_7_0, 2, &exposure_us_7_0, 1);
+    if (state->gain_auto && state->expo_auto) {
+        // Full auto: clamp AE_MAXEXPO ceiling to the new frame time so the AE engine
+        // cannot pick an exposure longer than the frame allows, then commit.
+        uint8_t exph, expm, expl;
+        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_MAXEXPO_17_16, 2, &exph, 1);
+        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_MAXEXPO_15_8, 2, &expm, 1);
+        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_MAXEXPO_7_0, 2, &expl, 1);
+        int32_t max_expo = IM_CLAMP(PAG7936_EXPOSURE(exph, expm, expl), PAG7936_EXP_MIN,
+                                    frame_time - PAG7936_EXP_MARGIN) / PAG7936_EXP_DIV;
+        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_MAXEXPO_17_16, 2, PAG7936_EXPOSURE_H(exph, max_expo), 1);
+        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_MAXEXPO_15_8, 2, PAG7936_EXPOSURE_M(max_expo), 1);
+        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_MAXEXPO_7_0, 2, PAG7936_EXPOSURE_L(max_expo), 1);
+        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_UPDATE, 2, SENSOR_UPDATE_FLAG, 1);
     } else {
-        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_MAXEXPO_17_16, 2, &exposure_us_17_16, 1);
-        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_MAXEXPO_15_8, 2, &exposure_us_15_8, 1);
-        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_MAXEXPO_7_0, 2, &exposure_us_7_0, 1);
+        // Read actual current exposure and clamp to new frame time.
+        // ae_apply commits the frame time change and updated manual exposure together.
+        uint8_t exph, expm, expl;
+        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXP_LINE_NUM_17_16, 2, &exph, 1);
+        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXP_LINE_NUM_15_8, 2, &expm, 1);
+        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXP_LINE_NUM_7_0, 2, &expl, 1);
+        int expo = IM_CLAMP(PAG7936_EXPOSURE(exph, expm, expl), PAG7936_EXP_MIN,
+                            frame_time - PAG7936_EXP_MARGIN) / PAG7936_EXP_DIV;
+        ret |= ae_apply(csi, -1, expo);
     }
 
-    int32_t exposure_us = PAG7936_EXPOSURE(exposure_us_17_16, exposure_us_15_8, exposure_us_7_0);
-    exposure_us = IM_CLAMP(exposure_us, PAG7936_EXP_MIN, (frame_time - PAG7936_EXP_OFFSET)) / PAG7936_EXP_DIV;
-
-    if (reg & AE_EXPO_MANUAL_AE_MANUAL_EN) {
-        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL_17_16, 2, &reg, 1);
-        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL_17_16, 2, PAG7936_EXPOSURE_H(reg, exposure_us), 1);
-        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL_15_8, 2, PAG7936_EXPOSURE_M(exposure_us), 1);
-        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL_7_0, 2, PAG7936_EXPOSURE_L(exposure_us), 1);
-    } else {
-        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_MAXEXPO_17_16, 2, &reg, 1);
-        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_MAXEXPO_17_16, 2, PAG7936_EXPOSURE_H(reg, exposure_us), 1);
-        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_MAXEXPO_15_8, 2, PAG7936_EXPOSURE_M(exposure_us), 1);
-        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_MAXEXPO_7_0, 2, PAG7936_EXPOSURE_L(exposure_us), 1);
-    }
-
-    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_UPDATE, 2, SENSOR_UPDATE_FLAG, 1);
     return ret;
 }
 
-static int set_gainceiling(omv_csi_t *csi, omv_csi_gainceiling_t gainceiling) {
-    uint8_t aec, reg;
-    int ret = omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL, 2, &aec, 1);
-    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL, 2, aec | AE_EXPO_MANUAL_AE_MANUAL_EN, 1);
+static int set_framesize(omv_csi_t *csi, omv_csi_framesize_t framesize) {
+    pag7936_state_t *state = csi->priv;
+    uint32_t w = csi->resolution[framesize][0];
+    uint32_t h = csi->resolution[framesize][1];
 
+    if (w > csi->resolution[OMV_CSI_FRAMESIZE_HD][0] ||
+        h > csi->resolution[OMV_CSI_FRAMESIZE_HD][1]) {
+        return -1;
+    }
+
+    #ifndef OMV_CSI_HW_SCALE_ENABLE
+    if (framesize != OMV_CSI_FRAMESIZE_HD &&
+        framesize != OMV_CSI_FRAMESIZE_VGA &&
+        framesize != OMV_CSI_FRAMESIZE_QVGA) {
+        return -1;
+    }
+    #endif
+
+    return configure(csi, framesize, state->framerate);
+}
+
+static int set_framerate(omv_csi_t *csi, int framerate) {
+    pag7936_state_t *state = csi->priv;
+    state->framerate = framerate;
+
+    if (csi->framesize == OMV_CSI_FRAMESIZE_INVALID) {
+        return 0;
+    }
+
+    // Disable any ongoing frame capture.
+    omv_csi_abort(csi, true, false);
+
+    return configure(csi, csi->framesize, framerate);
+}
+
+static int set_gainceiling(omv_csi_t *csi, omv_csi_gainceiling_t gainceiling) {
     int new_gainceiling = PAG7936_GAIN_SCALE << (gainceiling + 1);
     if (new_gainceiling > PAG7936_MAX_AGAIN_REG) {
         return -1;
     }
 
-    ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_MAXGAIN_10_8, 2, &reg, 1);
+    uint8_t reg;
+    int ret = omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_MAXGAIN_10_8, 2, &reg, 1);
     ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_MAXGAIN_10_8, 2, PAG7936_GAIN_H(reg, new_gainceiling), 1);
     ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_MAXGAIN_7_0, 2, PAG7936_GAIN_L(new_gainceiling), 1);
-
-    // Force AEC/AGC to reload the new values.
-    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_UPDATE, 2, SENSOR_UPDATE_FLAG, 1);
-    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL, 2, aec, 1);
     ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_UPDATE, 2, SENSOR_UPDATE_FLAG, 1);
     return ret;
 }
 
 static int set_colorbar(omv_csi_t *csi, int enable) {
     uint8_t reg;
-    int ret = omv_i2c_read_reg(csi->i2c, csi->slv_addr, ISP_EN_H, 2, &reg, 1);
-    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, ISP_EN_H, 2,
-                             (reg & ~ISP_EN_H_EN) | (enable ? ISP_EN_H_EN : 0), 1);
-    ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, ISP_TEST_MODE, 2, &reg, 1);
+    int ret = omv_i2c_read_reg(csi->i2c, csi->slv_addr, ISP_TEST_MODE, 2, &reg, 1);
     ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, ISP_TEST_MODE, 2,
                              (reg & ~ISP_TEST_MODE_RAMP) | (enable ? ISP_TEST_MODE_RAMP : 0), 1);
     ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_UPDATE, 2, SENSOR_UPDATE_FLAG, 1);
@@ -601,32 +736,26 @@ static int set_colorbar(omv_csi_t *csi, int enable) {
 }
 
 static int set_auto_gain(omv_csi_t *csi, int enable, float gain_db, float gain_db_ceiling) {
-    uint8_t reg;
-    int ret = omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL, 2, &reg, 1);
-    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL, 2, reg | AE_EXPO_MANUAL_AE_MANUAL_EN, 1);
+    pag7936_state_t *state = csi->priv;
+    state->gain_auto = enable;
+    int ret = 0;
+    int gain = -1;
 
-    if ((enable == 0) && (!isnanf(gain_db)) && (!isinff(gain_db))) {
-        int gain = fast_roundf(expf((gain_db / 20.0f) * M_LN10) * PAG7936_GAIN_SCALE_F);
-        gain = IM_CLAMP(gain, PAG7936_MIN_AGAIN_REG, PAG7936_MAX_AGAIN_REG);
-
-        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_GAIN_MANUAL_10_8, 2, &reg, 1);
-        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_GAIN_MANUAL_10_8, 2, PAG7936_GAIN_H(reg, gain), 1);
-        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_GAIN_MANUAL_7_0, 2, PAG7936_GAIN_L(gain), 1);
-    } else if ((enable != 0) && (!isnanf(gain_db_ceiling)) && (!isinff(gain_db_ceiling))) {
+    if (enable && !isnanf(gain_db_ceiling) && !isinff(gain_db_ceiling)) {
         int gain_ceiling = fast_roundf(expf((gain_db_ceiling / 20.0f) * M_LN10) * PAG7936_GAIN_SCALE_F);
         gain_ceiling = IM_CLAMP(gain_ceiling, PAG7936_MIN_AGAIN_REG, PAG7936_MAX_AGAIN_REG);
-
+        uint8_t reg;
         ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_MAXGAIN_10_8, 2, &reg, 1);
         ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_MAXGAIN_10_8, 2, PAG7936_GAIN_H(reg, gain_ceiling), 1);
         ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_MAXGAIN_7_0, 2, PAG7936_GAIN_L(gain_ceiling), 1);
     }
 
-    // Force AEC/AGC to reload the new values.
-    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_UPDATE, 2, SENSOR_UPDATE_FLAG, 1);
-    ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL, 2, &reg, 1);
-    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL, 2,
-                             (reg & ~AE_EXPO_MANUAL_AE_MANUAL_EN) | (enable ? 0 : AE_EXPO_MANUAL_AE_MANUAL_EN), 1);
-    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_UPDATE, 2, SENSOR_UPDATE_FLAG, 1);
+    if (!enable && !isnanf(gain_db) && !isinff(gain_db)) {
+        gain = fast_roundf(expf((gain_db / 20.0f) * M_LN10) * PAG7936_GAIN_SCALE_F);
+        gain = IM_CLAMP(gain, PAG7936_MIN_AGAIN_REG, PAG7936_MAX_AGAIN_REG);
+    }
+
+    ret |= ae_apply(csi, gain, -1);
     return ret;
 }
 
@@ -643,35 +772,21 @@ static int get_gain_db(omv_csi_t *csi, float *gain_db) {
 }
 
 static int set_auto_exposure(omv_csi_t *csi, int enable, int exposure_us) {
-    uint8_t reg, frame_time_20_16, frame_time_15_8, frame_time_7_0;
-    int ret = omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL, 2, &reg, 1);
-    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL, 2, reg | AE_EXPO_MANUAL_AE_MANUAL_EN, 1);
+    pag7936_state_t *state = csi->priv;
+    state->expo_auto = enable;
+    int ret = 0;
+    int expo = -1;
 
-    ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, FRAME_TIME_20_16, 2, &frame_time_20_16, 1);
-    ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, FRAME_TIME_15_8, 2, &frame_time_15_8, 1);
-    ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, FRAME_TIME_7_0, 2, &frame_time_7_0, 1);
-
-    int32_t frame_time_us = PAG7936_FRAME_TIME(frame_time_20_16, frame_time_15_8, frame_time_7_0);
-    exposure_us = IM_CLAMP(exposure_us, PAG7936_EXP_MIN, (frame_time_us - PAG7936_EXP_OFFSET)) / PAG7936_EXP_DIV;
-
-    if ((enable == 0) && (exposure_us >= 0)) {
-        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL_17_16, 2, &reg, 1);
-        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL_17_16, 2, PAG7936_EXPOSURE_H(reg, exposure_us), 1);
-        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL_15_8, 2, PAG7936_EXPOSURE_M(exposure_us), 1);
-        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL_7_0, 2, PAG7936_EXPOSURE_L(exposure_us), 1);
-    } else if ((enable != 0) && (exposure_us >= 0)) {
-        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_MAXEXPO_17_16, 2, &reg, 1);
-        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_MAXEXPO_17_16, 2, PAG7936_EXPOSURE_H(reg, exposure_us), 1);
-        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_MAXEXPO_15_8, 2, PAG7936_EXPOSURE_M(exposure_us), 1);
-        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_MAXEXPO_7_0, 2, PAG7936_EXPOSURE_L(exposure_us), 1);
+    if (!enable && exposure_us >= 0) {
+        uint8_t ft_h, ft_m, ft_l;
+        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, FRAME_TIME_20_16, 2, &ft_h, 1);
+        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, FRAME_TIME_15_8, 2, &ft_m, 1);
+        ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, FRAME_TIME_7_0, 2, &ft_l, 1);
+        int32_t frame_time = PAG7936_FRAME_TIME(ft_h, ft_m, ft_l);
+        expo = IM_CLAMP(exposure_us, PAG7936_EXP_MIN, frame_time - PAG7936_EXP_MARGIN) / PAG7936_EXP_DIV;
     }
 
-    // Force AEC/AGC to reload the new values.
-    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_UPDATE, 2, SENSOR_UPDATE_FLAG, 1);
-    ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL, 2, &reg, 1);
-    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, AE_EXPO_MANUAL, 2,
-                             (reg & ~AE_EXPO_MANUAL_AE_MANUAL_EN) | (enable ? 0 : AE_EXPO_MANUAL_AE_MANUAL_EN), 1);
-    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_UPDATE, 2, SENSOR_UPDATE_FLAG, 1);
+    ret |= ae_apply(csi, -1, expo);
     return ret;
 }
 
@@ -737,6 +852,39 @@ static int ioctl(omv_csi_t *csi, int request, va_list ap) {
             *va_arg(ap, uint32_t *) = rgb_stats[3];
             break;
         }
+        case OMV_CSI_IOCTL_SET_TRIGGERED_MODE: {
+            int enable = va_arg(ap, int);
+            ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_OPMODE, 2, SENSOR_OPMODE_SUSPEND, 1);
+
+            if (enable) {
+                ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_TG_EN, 2, 0, 1);
+                ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_TRIGGER_EN, 2, SENSOR_TRIGGER_EN_FLAG, 1);
+                ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_TRIGGER_MODE, 2, SENSOR_TRIGGER_MODE_1, 1);
+                ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_TRIGGER_EN, 2,
+                                         SENSOR_TRIGGER_EN_FLAG | SENSOR_TRIGGER_MODE_GPIO0, 1);
+            } else {
+                ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_TG_EN, 2, SENSOR_TG_EN_FLAG, 1);
+                ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_TRIGGER_EN, 2, 0, 1);
+                ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_TRIGGER_MODE, 2, 0, 1);
+            }
+
+            ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_OPMODE, 2, SENSOR_OPMODE_RUN, 1);
+
+            // Skip past the first corrupt frames...
+            if (!csi->disable_delays) {
+                mp_hal_delay_ms(100);
+            }
+            break;
+        }
+        case OMV_CSI_IOCTL_GET_TRIGGERED_MODE: {
+            int *enable = va_arg(ap, int *);
+            uint8_t reg;
+            ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, SENSOR_TG_EN, 2, &reg, 1);
+            if (ret >= 0) {
+                *enable = (reg & SENSOR_TG_EN_FLAG) ? 0 : 1;
+            }
+            break;
+        }
         default: {
             ret = -1;
             break;
@@ -747,6 +895,7 @@ static int ioctl(omv_csi_t *csi, int request, va_list ap) {
 }
 
 int pag7936_init(omv_csi_t *csi) {
+    csi->priv = &pag7936_state;
     // Initialize csi flags.
     csi->vsync_pol = 0;
     csi->hsync_pol = 0;
@@ -756,7 +905,7 @@ int pag7936_init(omv_csi_t *csi) {
     csi->cfa_format = SUBFORMAT_ID_BGGR;
     #if OMV_PAG7936_MIPI_CSI2
     csi->mipi_if = 1;
-    csi->mipi_brate = 1200;
+    csi->mipi_brate = 800;
     #endif
 
     // Initialize csi ops.

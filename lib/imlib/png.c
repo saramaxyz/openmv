@@ -28,18 +28,18 @@
 #include "file_utils.h"
 #if defined(IMLIB_ENABLE_PNG_ENCODER) || defined(IMLIB_ENABLE_PNG_DECODER)
 #include "lodepng.h"
-#include "umm_malloc.h"
+#include "umalloc.h"
 
 void *lodepng_malloc(size_t size) {
-    return umm_malloc(size);
+    return uma_malloc(size, 0);
 }
 
 void *lodepng_realloc(void *ptr, size_t new_size) {
-    return umm_realloc(ptr, new_size);
+    return uma_realloc(ptr, new_size, 0);
 }
 
 void lodepng_free(void *ptr) {
-    return umm_free(ptr);
+    uma_free(ptr);
 }
 
 unsigned lodepng_convert_cb(unsigned char *out, const unsigned char *in,
@@ -51,6 +51,24 @@ unsigned lodepng_convert_cb(unsigned char *out, const unsigned char *in,
         // Compression.
         // Note: we're always encoding to 8 bits.
         switch (mode_in->customfmt) {
+            case PIXFORMAT_BINARY: {
+                // BINARY -> 1-bit GREY flat-packed LSB-first (matches lodepng internal format)
+                if (mode_out->colortype == LCT_GREY && mode_out->bitdepth == 1) {
+                    uint32_t line_len = (w + UINT32_T_MASK) >> UINT32_T_SHIFT;
+                    const uint32_t *row_ptr = (const uint32_t *) in;
+                    memset(out, 0, (numpixels + 7) / 8);
+                    uint32_t outbit = 0;
+                    for (uint32_t y = 0; y < h; y++, row_ptr += line_len) {
+                        for (uint32_t x = 0; x < w; x++, outbit++) {
+                            uint32_t bit = IMAGE_GET_BINARY_PIXEL_FAST(row_ptr, x);
+                            out[outbit >> 3] |= bit << (7 - (outbit & 7));
+                        }
+                    }
+                } else {
+                    error = 56; // unsupported color mode conversion.
+                }
+                break;
+            }
             case PIXFORMAT_RGB565: {
                 uint16_t *pixels = (uint16_t *) in;
                 if (mode_out->colortype == LCT_RGB) {
@@ -85,6 +103,60 @@ unsigned lodepng_convert_cb(unsigned char *out, const unsigned char *in,
         // Decompression.
         // NOTE: decode from 16 bits needs to be implemented.
         switch (mode_out->customfmt) {
+            case PIXFORMAT_BINARY: {
+                // * -> BINARY (LSB-first 32-bit-aligned rows)
+                uint32_t line_len = (w + UINT32_T_MASK) >> UINT32_T_SHIFT;
+                memset(out, 0, line_len * sizeof(uint32_t) * h);
+                if (mode_in->colortype == LCT_GREY && mode_in->bitdepth == 1) {
+                    // 1-bit GREY (PNG MSB-first) -> BINARY
+                    uint32_t *row_ptr = (uint32_t *) out;
+                    uint32_t inbit = 0;
+                    for (uint32_t y = 0; y < h; y++, row_ptr += line_len) {
+                        for (uint32_t x = 0; x < w; x++, inbit++) {
+                            if ((in[inbit >> 3] >> (7 - (inbit & 7))) & 1) {
+                                IMAGE_SET_BINARY_PIXEL_FAST(row_ptr, x);
+                            }
+                        }
+                    }
+                } else if (mode_in->colortype == LCT_GREY && mode_in->bitdepth == 8) {
+                    // GRAYSCALE8 -> BINARY (backwards compatibility)
+                    uint32_t *row_ptr = (uint32_t *) out;
+                    for (uint32_t y = 0; y < h; y++, row_ptr += line_len) {
+                        for (uint32_t x = 0; x < w; x++) {
+                            if (*in++ > 127) {
+                                IMAGE_SET_BINARY_PIXEL_FAST(row_ptr, x);
+                            }
+                        }
+                    }
+                } else {
+                    error = 56; // unsupported color mode conversion.
+                }
+                break;
+            }
+            case PIXFORMAT_GRAYSCALE: {
+                if (mode_in->colortype == LCT_GREY && mode_in->bitdepth == 1) {
+                    // 1-bit GREY (PNG MSB-first) -> GRAYSCALE
+                    for (int i = 0; i < numpixels; i++) {
+                        out[i] = ((in[i >> 3] >> (7 - (i & 7))) & 1) ? 255 : 0;
+                    }
+                } else if (mode_in->colortype == LCT_GREY && mode_in->bitdepth == 8) {
+                    // GRAYSCALE8 -> GRAYSCALE (same format)
+                    memcpy(out, in, numpixels);
+                } else if (mode_in->colortype == LCT_RGB) {
+                    // RGB888 -> GRAYSCALE
+                    for (int i = 0; i < numpixels; i++, in += 3) {
+                        out[i] = COLOR_RGB888_TO_Y(in[0], in[1], in[2]);
+                    }
+                } else if (mode_in->colortype == LCT_RGBA) {
+                    // RGBA888 -> GRAYSCALE
+                    for (int i = 0; i < numpixels; i++, in += 4) {
+                        out[i] = COLOR_RGB888_TO_Y(in[0], in[1], in[2]);
+                    }
+                } else {
+                    error = 56; // unsupported color mode conversion.
+                }
+                break;
+            }
             case PIXFORMAT_RGB565: {
                 uint16_t *pixels = (uint16_t *) out;
                 if (mode_in->colortype == LCT_RGB) {
@@ -101,6 +173,12 @@ unsigned lodepng_convert_cb(unsigned char *out, const unsigned char *in,
                     // GRAYSCALE -> RGB565
                     for (int i = 0; i < numpixels; i++, in++) {
                         pixels[i] = COLOR_R8_G8_B8_TO_RGB565(in[0], in[0], in[0]);
+                    }
+                } else if (mode_in->colortype == LCT_GREY && mode_in->bitdepth == 1) {
+                    // 1-bit GREY (PNG MSB-first) -> RGB565
+                    for (int i = 0; i < numpixels; i++) {
+                        uint8_t bit = (in[i >> 3] >> (7 - (i & 7))) & 1;
+                        pixels[i] = bit ? 0xFFFF : 0x0000;
                     }
                 } else {
                     error = 56; // unsupported color mode conversion.
@@ -124,8 +202,6 @@ bool png_compress(image_t *src, image_t *dst) {
         return true;
     }
 
-    umm_init_x(fb_avail());
-
     LodePNGState state;
     lodepng_state_init(&state);
     // Invoked on custom formats.
@@ -135,11 +211,12 @@ bool png_compress(image_t *src, image_t *dst) {
 
     switch (src->pixfmt) {
         case PIXFORMAT_BINARY:
-            state.info_raw.bitdepth = 1;
-            state.info_raw.colortype = LCT_GREY;
+            state.info_raw.bitdepth = 8; // LCT_CUSTOM only accepts 8 or 16
+            state.info_raw.colortype = LCT_CUSTOM;
+            state.info_raw.customfmt = PIXFORMAT_BINARY;
 
             state.encoder.auto_convert = false;
-            state.info_png.color.bitdepth = 8;
+            state.info_png.color.bitdepth = 1; // proper 1-bit greyscale PNG
             state.info_png.color.colortype = LCT_GREY;
             break;
         case PIXFORMAT_GRAYSCALE:
@@ -178,7 +255,6 @@ bool png_compress(image_t *src, image_t *dst) {
     if (dst->data == NULL) {
         dst->data = png_data;
         dst->size = png_size;
-        // fb_alloc() memory ill be free'd by called.
     } else {
         if (image_size(dst) <= png_size) {
             dst->size = png_size;
@@ -187,8 +263,7 @@ bool png_compress(image_t *src, image_t *dst) {
             mp_raise_msg_varg(&mp_type_RuntimeError,
                               MP_ERROR_TEXT("Failed to compress image in place"));
         }
-        // free fb_alloc() memory used for umm_init_x().
-        fb_free(); // umm_init_x();
+        uma_free(png_data);
     }
     return false;
 }
@@ -196,8 +271,6 @@ bool png_compress(image_t *src, image_t *dst) {
 
 #if defined(IMLIB_ENABLE_PNG_DECODER)
 void png_decompress(image_t *dst, image_t *src) {
-    umm_init_x(fb_avail());
-
     LodePNGState state;
     lodepng_state_init(&state);
     // Invoked on custom formats.
@@ -205,12 +278,14 @@ void png_decompress(image_t *dst, image_t *src) {
 
     switch (dst->pixfmt) {
         case PIXFORMAT_BINARY:
-            state.info_raw.bitdepth = 1;
-            state.info_raw.colortype = LCT_GREY;
+            state.info_raw.bitdepth = 8; // LCT_CUSTOM only accepts 8 or 16
+            state.info_raw.colortype = LCT_CUSTOM;
+            state.info_raw.customfmt = PIXFORMAT_BINARY;
             break;
         case PIXFORMAT_GRAYSCALE:
             state.info_raw.bitdepth = 8;
-            state.info_raw.colortype = LCT_GREY;
+            state.info_raw.colortype = LCT_CUSTOM;
+            state.info_raw.customfmt = PIXFORMAT_GRAYSCALE;
             break;
         case PIXFORMAT_RGB565:
             state.info_raw.bitdepth = 16;
@@ -235,8 +310,7 @@ void png_decompress(image_t *dst, image_t *src) {
                           MP_ERROR_TEXT("Failed to compress image in place"));
     }
 
-    // free fb_alloc() memory used for umm_init_x().
-    fb_free(); // umm_init_x();
+    uma_free(png_data);
 }
 #endif // IMLIB_ENABLE_PNG_DECODER
 #endif // IMLIB_ENABLE_PNG_ENCODER || IMLIB_ENABLE_PNG_DECODER
@@ -284,19 +358,18 @@ void png_read_geometry(file_t *fp, image_t *img, const char *path, png_read_sett
 // This function reads the pixel values of an image.
 void png_read_pixels(file_t *fp, image_t *img) {
     file_seek(fp, 0);
-    file_read(fp, img->pixels, img->size);
+    file_read(fp, img->data, img->size);
 }
 
 void png_read(image_t *img, const char *path) {
     file_t fp;
     png_read_settings_t rs;
 
-    // Do not use file buferring here.
-    file_open(&fp, path, false, FA_READ | FA_OPEN_EXISTING);
+    file_open(&fp, path, FA_READ | FA_OPEN_EXISTING);
 
     png_read_geometry(&fp, img, path, &rs);
 
-    if (!img->pixels) {
+    if (!img->data) {
         image_alloc(img, img->size);
     }
 
@@ -306,14 +379,20 @@ void png_read(image_t *img, const char *path) {
 
 void png_write(image_t *img, const char *path) {
     file_t fp;
-    file_open(&fp, path, false, FA_WRITE | FA_CREATE_ALWAYS);
+    file_open(&fp, path, FA_WRITE | FA_CREATE_ALWAYS);
     if (img->pixfmt == PIXFORMAT_PNG) {
-        file_write(&fp, img->pixels, img->size);
+        file_write(&fp, img->data, img->size);
     } else {
-        image_t out = { .w = img->w, .h = img->h, .pixfmt = PIXFORMAT_PNG, .size = 0, .pixels = NULL }; // alloc in png compress
+        image_t out = {
+            .w = img->w,
+            .h = img->h,
+            .pixfmt = PIXFORMAT_PNG,
+            .size = 0,
+            .data = NULL // alloc in png compress
+        };
         png_compress(img, &out);
-        file_write(&fp, out.pixels, out.size);
-        fb_free(); // frees alloc in png_compress()
+        file_write(&fp, out.data, out.size);
+        uma_free(out.data);
     }
     file_close(&fp);
 }

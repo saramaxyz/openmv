@@ -30,7 +30,7 @@
  *
  * PixArt PS5520 driver.
  */
-#include "omv_boardconfig.h"
+#include "board_config.h"
 #if (OMV_PS5520_ENABLE == 1)
 
 #include <stdint.h>
@@ -41,6 +41,9 @@
 #include "omv_i2c.h"
 #include "omv_csi.h"
 #include "py/mphal.h"
+
+#define SENSOR_WIDTH            2592
+#define SENSOR_HEIGHT           1944
 
 #define REG_BANK                (0xEF)
 
@@ -65,9 +68,8 @@
 #define HTS_5M_30               (2700)
 #define CONST1                  (HTS_5M_30 - 1600)
 
-static int g_div = 1;
-#define ConvertL2T(line)        ((((line * HTS_5M_30) + CONST1) * (g_div) + (PIX_CLK / 2000000)) / (PIX_CLK / 1000000))
-#define ConvertT2L(t)           (((t / (g_div)) * (PIX_CLK / 1000000) - CONST1 + (HTS_5M_30 / 2)) / HTS_5M_30)
+#define ConvertL2T(line, g_div) ((((line * HTS_5M_30) + CONST1) * (g_div) + (PIX_CLK / 2000000)) / (PIX_CLK / 1000000))
+#define ConvertT2L(t, g_div)    (((t / (g_div)) * (PIX_CLK / 1000000) - CONST1 + (HTS_5M_30 / 2)) / HTS_5M_30)
 #define ConvertT2LineBase(t)    (((t) * (PIX_CLK / 1000000) - CONST1 + (HTS_5M_30 / 2)) / HTS_5M_30)
 
 #define PS5520_MIN_INT          (1) // ExpLine min vlaue
@@ -91,16 +93,23 @@ static int g_div = 1;
 #define PS5520_DEF_EXP_CEILING  (VTS_5M_30 - 3)
 
 #define PS5520_L_TARGET         (80)
+#define PS5520_L_AGC_DIFF_MIN   (4)
 #define PS5520_L_AGC_DIFF_DIV   (10)
+#define PS5520_L_AEC_ROOM_DIV   (10)
 #define PS5520_L_AEC_DIFF_MUL   (10)
+#define PS5520_L_AEC_MAX_STEP   (50)
 
-static bool enable_agc = true;
-static int32_t agc_gain = PS5520_DEF_GAIN;
-static int32_t agc_gain_ceiling = PS5520_DEF_GAINCEILING;
+typedef struct ps5520_state {
+    bool enable_agc;
+    int32_t agc_gain;
+    int32_t agc_gain_ceiling;
+    bool enable_aec;
+    int32_t aec_exposure;
+    int32_t aec_exposure_ceiling;
+    int g_div;
+} ps5520_state_t;
 
-static bool enable_aec = true;
-static int32_t aec_exposure = PS5520_DEF_EXP;
-static int32_t aec_exposure_ceiling = PS5520_MAX_INT;
+static ps5520_state_t ps5520_state = {};
 
 static const uint8_t sw_reset_regs[][2] = {
     { 0xEF, 0x05 },
@@ -149,6 +158,9 @@ static const uint8_t stream_off_regs[][2] = {
     { 0x00, 0x00 }, // End
 };
 
+// These per-resolution register tables are only used without the ISP scaler;
+// with the scaler the sensor runs at full resolution and the ISP scales down.
+#ifndef OMV_CSI_HW_SCALE_ENABLE
 static const uint8_t res_640x480_regs[][2] = {
     // PS5520_640x480x30fps_24MHz_2Lane_RAW10_840Mbps_20190408_C10A.asc
     { 0xEF, 0x05 },
@@ -931,6 +943,7 @@ static const uint8_t res_2560x1440_regs[][2] = {
     { 0xFF, 0x02 }, // Delay 2 ms
     { 0x00, 0x00 }, // End
 };
+#endif // OMV_CSI_HW_SCALE_ENABLE
 
 static const uint8_t res_2592x1944_regs[][2] = {
     // PS5520_2592x1944x30fps_24MHz_2Lane_RAW10_840Mbps_20190408_C10A.asc
@@ -1132,21 +1145,31 @@ static int write_registers(omv_csi_t *csi, const uint8_t(*regs)[2]);
 static int get_exposure_us(omv_csi_t *csi, int *exposure_us);
 
 static int reset(omv_csi_t *csi) {
+    ps5520_state_t *ps5520 = csi->priv;
     int ret = 0;
     uint8_t exposure_line_h;
     uint8_t exposure_line_l;
     int16_t lpf;
 
     // Set resolution
+    #ifdef OMV_CSI_HW_SCALE_ENABLE
+    // With the hardware scaler the sensor always runs at full resolution and the
+    // ISP scales down; the old per-resolution register tables are used otherwise.
+    ret |= write_registers(csi, sw_reset_regs);
+    ret |= write_registers(csi, res_2592x1944_regs);
+    #else
     ret |= write_registers(csi, res_640x480_regs);
+    #endif // OMV_CSI_HW_SCALE_ENABLE
 
-    enable_agc = true;
-    agc_gain = PS5520_DEF_GAIN;
-    agc_gain_ceiling = PS5520_DEF_GAINCEILING;
+    ps5520->enable_agc = true;
+    ps5520->agc_gain = PS5520_DEF_GAIN;
+    ps5520->agc_gain_ceiling = PS5520_DEF_GAINCEILING;
 
-    enable_aec = true;
-    aec_exposure = PS5520_DEF_EXP;
-    aec_exposure_ceiling = PS5520_DEF_EXP_CEILING;
+    ps5520->enable_aec = true;
+    ps5520->aec_exposure = PS5520_DEF_EXP;
+    ps5520->aec_exposure_ceiling = PS5520_DEF_EXP_CEILING;
+
+    ps5520->g_div = 1;
 
     ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, CMD_LPF_H, 1, &exposure_line_h, 1);
     ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, CMD_LPF_L, 1, &exposure_line_l, 1);
@@ -1155,11 +1178,11 @@ static int reset(omv_csi_t *csi) {
     ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, REG_BANK, 1, 0x01, 1);
 
     // Set default gain
-    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, CMD_GAIN_IDX, 1, agc_gain, 1);
+    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, CMD_GAIN_IDX, 1, ps5520->agc_gain, 1);
 
     // Set default exposure
-    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, CMD_OFFNY1_H, 1, (lpf - 1 - aec_exposure) >> 8, 1);
-    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, CMD_OFFNY1_L, 1, (lpf - 1 - aec_exposure) & 0xFF, 1);
+    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, CMD_OFFNY1_H, 1, (lpf - 1 - ps5520->aec_exposure) >> 8, 1);
+    ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, CMD_OFFNY1_L, 1, (lpf - 1 - ps5520->aec_exposure) & 0xFF, 1);
 
     ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_UPDATE, 1, 0x01, 1);
 
@@ -1232,7 +1255,15 @@ static int set_pixformat(omv_csi_t *csi, pixformat_t pixformat) {
 }
 
 static int set_framesize(omv_csi_t *csi, omv_csi_framesize_t framesize) {
+    uint32_t w = csi->resolution[framesize][0];
+    uint32_t h = csi->resolution[framesize][1];
+
+    if (w > SENSOR_WIDTH || h > SENSOR_HEIGHT) {
+        return -1;
+    }
+
     int ret = 0;
+    #ifndef OMV_CSI_HW_SCALE_ENABLE
     const uint8_t(*regs)[2];
 
     switch (framesize) {
@@ -1263,10 +1294,12 @@ static int set_framesize(omv_csi_t *csi, omv_csi_framesize_t framesize) {
 
     // Set resolution
     ret |= write_registers(csi, regs);
+    #endif // OMV_CSI_HW_SCALE_ENABLE
     return ret;
 }
 
 static int set_framerate(omv_csi_t *csi, int framerate) {
+    ps5520_state_t *ps5520 = csi->priv;
     int ret = 0;
     int cnt;
     int exposure_us;
@@ -1293,12 +1326,12 @@ static int set_framerate(omv_csi_t *csi, int framerate) {
     lpf = EXP_TBL_INTERPOLATE(lpf, cnt) - 1; // Cmd_Lpf
     np = gu16ExpTbl[cnt].np; // Cmd_Np
 
-    if (g_div != gu16ExpTbl[cnt].div) {
-        g_div = gu16ExpTbl[cnt].div;
+    if (ps5520->g_div != gu16ExpTbl[cnt].div) {
+        ps5520->g_div = gu16ExpTbl[cnt].div;
         flg_stall = 1;
     }
 
-    int16_t exposure_line = ConvertT2L(exposure_us);
+    int16_t exposure_line = ConvertT2L(exposure_us, ps5520->g_div);
 
     exposure_line = IM_CLAMP(exposure_line, PS5520_MIN_INT, (lpf - 2));
 
@@ -1317,7 +1350,7 @@ static int set_framerate(omv_csi_t *csi, int framerate) {
     if (flg_stall == 1) {
         ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, REG_BANK, 1, 0x05, 1);
         ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, 0x25, 1, 0x01, 1);
-        mp_hal_delay_ms(35 * g_div);  // delay over 1 frame time
+        mp_hal_delay_ms(35 * ps5520->g_div);  // delay over 1 frame time
         ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, 0x25, 1, 0x00, 1);
     }
 
@@ -1350,10 +1383,11 @@ static int set_colorbar(omv_csi_t *csi, int enable) {
 }
 
 static int set_auto_gain(omv_csi_t *csi, int enable, float gain_db, float gain_db_ceiling) {
+    ps5520_state_t *ps5520 = csi->priv;
     int ret = 0;
     int idx = 0;
 
-    enable_agc = enable;
+    ps5520->enable_agc = enable;
 
     if ((enable == 0) && (!isnanf(gain_db)) && (!isinff(gain_db))) {
         int gain = fast_roundf(expf((gain_db / 20.0f) * M_LN10) * PS5520_GAIN_SCALE_F);
@@ -1362,10 +1396,10 @@ static int set_auto_gain(omv_csi_t *csi, int enable, float gain_db, float gain_d
         for (idx = 0; gain >> (4 + idx); idx++) {
         }
 
-        agc_gain = ((idx - 1) << 4) + ((gain >> (idx - 1)) & 0x0F);
+        ps5520->agc_gain = ((idx - 1) << 4) + ((gain >> (idx - 1)) & 0x0F);
 
         ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, REG_BANK, 1, 0x01, 1);
-        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, CMD_GAIN_IDX, 1, agc_gain, 1);
+        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, CMD_GAIN_IDX, 1, ps5520->agc_gain, 1);
         ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_UPDATE, 1, 0x01, 1);
     } else if ((enable != 0) && (!isnanf(gain_db_ceiling)) && (!isinff(gain_db_ceiling))) {
         int gain = fast_roundf(expf((gain_db_ceiling / 20.0f) * M_LN10) * PS5520_GAIN_SCALE_F);
@@ -1374,7 +1408,7 @@ static int set_auto_gain(omv_csi_t *csi, int enable, float gain_db, float gain_d
         for (idx = 0; gain >> (4 + idx); idx++) {
         }
 
-        agc_gain_ceiling = ((idx - 1) << 4) + ((gain >> (idx - 1)) & 0x0F);
+        ps5520->agc_gain_ceiling = ((idx - 1) << 4) + ((gain >> (idx - 1)) & 0x0F);
     }
 
     return ret;
@@ -1392,12 +1426,13 @@ static int get_gain_db(omv_csi_t *csi, float *gain_db) {
 }
 
 static int set_auto_exposure(omv_csi_t *csi, int enable, int exposure_us) {
+    ps5520_state_t *ps5520 = csi->priv;
     int ret = 0;
     int16_t lpf;
     uint8_t exposure_line_h;
     uint8_t exposure_line_l;
 
-    enable_aec = enable;
+    ps5520->enable_aec = enable;
 
     if ((enable == 0) && (exposure_us >= 0)) {
         ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, REG_BANK, 1, 0x01, 1);
@@ -1406,22 +1441,23 @@ static int set_auto_exposure(omv_csi_t *csi, int enable, int exposure_us) {
         ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, CMD_LPF_L, 1, &exposure_line_l, 1);
         lpf = (exposure_line_h << 8) + exposure_line_l; // Cmd_Lpf
 
-        int32_t exposure_line = ConvertT2L(exposure_us);
-        aec_exposure = IM_CLAMP(exposure_line, PS5520_MIN_INT, (lpf - 2));
+        int32_t exposure_line = ConvertT2L(exposure_us, ps5520->g_div);
+        ps5520->aec_exposure = IM_CLAMP(exposure_line, PS5520_MIN_INT, (lpf - 2));
 
-        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, CMD_OFFNY1_H, 1, (lpf - aec_exposure) >> 8, 1);
-        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, CMD_OFFNY1_L, 1, (lpf - aec_exposure) & 0xFF, 1);
+        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, CMD_OFFNY1_H, 1, (lpf - ps5520->aec_exposure) >> 8, 1);
+        ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, CMD_OFFNY1_L, 1, (lpf - ps5520->aec_exposure) & 0xFF, 1);
 
         ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_UPDATE, 1, 0x01, 1);
     } else if ((enable != 0) && (exposure_us >= 0)) {
-        aec_exposure_ceiling = ConvertT2LineBase(exposure_us);
-        aec_exposure_ceiling = IM_CLAMP(aec_exposure_ceiling, PS5520_MIN_INT, PS5520_MAX_INT);
+        ps5520->aec_exposure_ceiling = ConvertT2LineBase(exposure_us);
+        ps5520->aec_exposure_ceiling = IM_CLAMP(ps5520->aec_exposure_ceiling, PS5520_MIN_INT, PS5520_MAX_INT);
     }
 
     return ret;
 }
 
 static int get_exposure_us(omv_csi_t *csi, int *exposure_us) {
+    ps5520_state_t *ps5520 = csi->priv;
     int ret = 0;
     uint16_t lpf;
     uint8_t exposure_line_h;
@@ -1437,7 +1473,7 @@ static int get_exposure_us(omv_csi_t *csi, int *exposure_us) {
     ret |= omv_i2c_read_reg(csi->i2c, csi->slv_addr, CMD_OFFNY1_L, 1, &exposure_line_l, 1);
 
     int16_t exposure_line = lpf - ((exposure_line_h << 8) + exposure_line_l);
-    *exposure_us = ConvertL2T(exposure_line);
+    *exposure_us = ConvertL2T(exposure_line, ps5520->g_div);
 
     return ret;
 }
@@ -1488,29 +1524,48 @@ static int set_vflip(omv_csi_t *csi, int enable) {
 }
 
 static int update_agc_aec(omv_csi_t *csi, int luminance) {
+    ps5520_state_t *ps5520 = csi->priv;
     int ret = 0;
     int diff = PS5520_L_TARGET - luminance;
 
-    if (abs(diff) > 0) {
-        bool aec_exposure_in = ((diff > 0) && (aec_exposure < aec_exposure_ceiling)) ||
-                               ((diff < 0) && (agc_gain <= PS5520_MIN_GAIN_IDX));
+    // Dead zone: ignore small luminance deviations. With raw (un-smoothed)
+    // luminance, frame-to-frame sensor noise is not filtered, so a small
+    // dead zone prevents noise-driven corrections that appear as flicker.
+    if (abs(diff) > PS5520_L_AGC_DIFF_MIN) {
+        // If exposure and gain are both floored and scene is still too
+        // bright, skip the adjustment — nothing can change and redundant
+        // I2C writes may cause sensor glitches.
+        if (diff < 0 && ps5520->aec_exposure <= PS5520_MIN_INT && ps5520->agc_gain <= PS5520_MIN_GAIN_IDX) {
+            return 0;
+        }
+
+        bool aec_exposure_in = ((diff > 0) && (ps5520->aec_exposure < ps5520->aec_exposure_ceiling)) ||
+                               ((diff < 0) && (ps5520->agc_gain <= PS5520_MIN_GAIN_IDX));
 
         ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, REG_BANK, 1, 0x01, 1);
 
-        if (enable_aec && aec_exposure_in) {
+        if (ps5520->enable_aec && aec_exposure_in) {
             // Long exposure first for better SNR
             int32_t lpf;
             uint8_t np;
             bool flg_stall = 0;
             int32_t exposure_line;
 
-            aec_exposure += diff * PS5520_L_AEC_DIFF_MUL;
-            aec_exposure = IM_CLAMP(aec_exposure, PS5520_MIN_INT, aec_exposure_ceiling);
+            // Continuous step scaling: max_step is proportional to how
+            // far the current luminance is from either saturation extreme
+            // (0 or 255). This avoids step-size discontinuities that cause
+            // oscillation at zone boundaries.
+            int32_t headroom = IM_MIN(luminance, 255 - luminance);
+            int32_t max_step = IM_MAX(1, IM_MIN(PS5520_L_AEC_MAX_STEP, headroom / PS5520_L_AEC_ROOM_DIV));
+            int32_t step = diff * PS5520_L_AEC_DIFF_MUL;
+            step = IM_CLAMP(step, -max_step, max_step);
+            ps5520->aec_exposure += step;
+            ps5520->aec_exposure = IM_CLAMP(ps5520->aec_exposure, PS5520_MIN_INT, ps5520->aec_exposure_ceiling);
 
-            if (aec_exposure > (VTS_5M_30 - 1 - 2)) {
+            if (ps5520->aec_exposure > (VTS_5M_30 - 1 - 2)) {
                 int cnt = 0;
 
-                lpf = aec_exposure + 2 + 1;
+                lpf = ps5520->aec_exposure + 2 + 1;
 
                 for (cnt = 0; gu16ExpTbl[cnt].idx < 0xFFFFFF; cnt++) {
                     if (lpf < gu16ExpTbl[cnt].idx) {
@@ -1525,15 +1580,15 @@ static int update_agc_aec(omv_csi_t *csi, int luminance) {
                 np = gu16ExpTbl[cnt].np; // Cmd_Np
                 exposure_line = lpf - 2;
 
-                if (g_div != gu16ExpTbl[cnt].div) {
-                    g_div = gu16ExpTbl[cnt].div;
+                if (ps5520->g_div != gu16ExpTbl[cnt].div) {
+                    ps5520->g_div = gu16ExpTbl[cnt].div;
                     flg_stall = 1;
                 }
                 ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, CMD_NP, 1, np & 0xFF, 1);
 
             } else {
                 lpf = VTS_5M_30 - 1;
-                exposure_line = aec_exposure;
+                exposure_line = ps5520->aec_exposure;
                 exposure_line = IM_CLAMP(exposure_line, PS5520_MIN_INT, (lpf - 2));
             }
             ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, CMD_LPF_H, 1, lpf >> 8, 1);
@@ -1547,16 +1602,18 @@ static int update_agc_aec(omv_csi_t *csi, int luminance) {
             if (flg_stall == 1) {
                 ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, REG_BANK, 1, 0x05, 1);
                 ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, 0x25, 1, 0x01, 1);
-                mp_hal_delay_ms(35 * g_div);  // delay over 1 frame time
+                mp_hal_delay_ms(35 * ps5520->g_div); // delay over 1 frame time
                 ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, 0x25, 1, 0x00, 1);
             }
 
-        } else if (enable_agc) {
-            agc_gain += diff / PS5520_L_AGC_DIFF_DIV;
-            agc_gain = IM_CLAMP(agc_gain, PS5520_MIN_GAIN_IDX, agc_gain_ceiling);
+        } else if (ps5520->enable_agc) {
+            int32_t gain_step = diff / PS5520_L_AGC_DIFF_DIV;
+            gain_step = IM_CLAMP(gain_step, -1, 1);
+            ps5520->agc_gain += gain_step;
+            ps5520->agc_gain = IM_CLAMP(ps5520->agc_gain, PS5520_MIN_GAIN_IDX, ps5520->agc_gain_ceiling);
 
             //ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, REG_BANK, 1, 0x01, 1);
-            ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, CMD_GAIN_IDX, 1, agc_gain, 1);
+            ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, CMD_GAIN_IDX, 1, ps5520->agc_gain, 1);
             ret |= omv_i2c_write_reg(csi->i2c, csi->slv_addr, SENSOR_UPDATE, 1, 0x01, 1);
         }
     }
@@ -1580,6 +1637,8 @@ static int ioctl(omv_csi_t *csi, int request, va_list ap) {
 }
 
 int ps5520_init(omv_csi_t *csi) {
+    csi->priv = &ps5520_state;
+
     // Initialize csi flags.
     csi->vsync_pol = 0;
     csi->hsync_pol = 0;
@@ -1609,6 +1668,12 @@ int ps5520_init(omv_csi_t *csi) {
     csi->get_rgb_gain_db = get_rgb_gain_db;
     csi->set_hmirror = set_hmirror;
     csi->set_vflip = set_vflip;
+
+    #ifdef OMV_CSI_HW_SCALE_ENABLE
+    // Source resolution for the ISP scaler (sensor runs at full resolution).
+    csi->src_w = SENSOR_WIDTH;
+    csi->src_h = SENSOR_HEIGHT;
+    #endif // OMV_CSI_HW_SCALE_ENABLE
 
     return 0;
 }

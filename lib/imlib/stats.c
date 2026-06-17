@@ -167,7 +167,7 @@ void imlib_get_similarity(image_t *img,
 
     imlib_similarity_line_op_state_t state;
     state.dssim = dssim;
-    int *base = fb_alloc0(h_blocks * sizeof(int) * 5, FB_ALLOC_NO_HINT);
+    int *base = uma_calloc(h_blocks * sizeof(int) * 5, 0);
     state.sumBucketsOfX = &base[h_blocks * 0];
     state.sumBucketsOfY = &base[h_blocks * 1];
     state.sum2BucketsOfX = &base[h_blocks * 2];
@@ -180,7 +180,7 @@ void imlib_get_similarity(image_t *img,
     state.lines_processed = 0;
     state.lines = p1.y - p0.y;
 
-    void *dst_row_override = fb_alloc0(image_line_size(img), FB_ALLOC_CACHE_ALIGN);
+    void *dst_row_override = uma_calloc(image_line_size(img), UMA_CACHE);
     imlib_draw_image(img, other, x_start, y_start, x_scale, y_scale, roi,
                      rgb_channel, alpha, color_palette, alpha_palette, hint,
                      NULL, imlib_similarity_line_op, &state, dst_row_override);
@@ -190,8 +190,8 @@ void imlib_get_similarity(image_t *img,
     *min = state.similarity_min;
     *max = state.similarity_max;
 
-    fb_free(); // dst_row_override
-    fb_free(); // sumBucketsOfX
+    uma_free(dst_row_override);
+    uma_free(base);
 }
 #endif // IMLIB_ENABLE_GET_SIMILARITY
 
@@ -871,6 +871,18 @@ static int get_median_l(long long *array, long long array_sum, int array_len) {
     return array_len - 1;
 }
 
+static bool grow_points(point_t **points, size_t *points_max) {
+    size_t new_max = *points_max ? (*points_max * 2) : 256;
+    point_t *new_points = (point_t *) uma_realloc(*points, new_max * sizeof(point_t),
+                                                  UMA_DTCM | UMA_MAYBE);
+    if (!new_points) {
+        return false;
+    }
+    *points = new_points;
+    *points_max = new_max;
+    return true;
+}
+
 bool imlib_get_regression(find_lines_list_lnk_data_t *out,
                           image_t *ptr,
                           rectangle_t *roi,
@@ -879,23 +891,27 @@ bool imlib_get_regression(find_lines_list_lnk_data_t *out,
                           list_t *thresholds,
                           bool invert,
                           unsigned int area_threshold,
-                          unsigned int pixels_threshold,
-                          bool robust) {
+                          unsigned int pixels_threshold) {
     bool result = false;
     memset(out, 0, sizeof(find_lines_list_lnk_data_t));
 
-    if (!robust) {
-        // Least Squares
+    // Theil-Sen Estimator
+    int *x_histogram = uma_calloc(ptr->w * sizeof(int), UMA_DTCM);
+    int *y_histogram = uma_calloc(ptr->h * sizeof(int), UMA_DTCM);
+    long long *x_delta_histogram = uma_calloc((2 * ptr->w) * sizeof(long long), UMA_DTCM);
+    long long *y_delta_histogram = uma_calloc((2 * ptr->h) * sizeof(long long), UMA_DTCM);
+
+    point_t *points = NULL;
+    size_t points_max = 0;
+    size_t points_count = 0;
+    grow_points(&points, &points_max);
+
+    if (points_max) {
         int blob_x1 = roi->x + roi->w - 1;
         int blob_y1 = roi->y + roi->h - 1;
         int blob_x2 = roi->x;
         int blob_y2 = roi->y;
         int blob_pixels = 0;
-        int blob_cx = 0;
-        int blob_cy = 0;
-        long long blob_a = 0;
-        long long blob_b = 0;
-        long long blob_c = 0;
 
         list_for_each(it, thresholds) {
             color_thresholds_list_lnk_data_t *lnk_data = list_get_data(it);
@@ -911,11 +927,13 @@ bool imlib_get_regression(find_lines_list_lnk_data_t *out,
                                 blob_x2 = IM_MAX(blob_x2, x);
                                 blob_y2 = IM_MAX(blob_y2, y);
                                 blob_pixels += 1;
-                                blob_cx += x;
-                                blob_cy += y;
-                                blob_a += x * x;
-                                blob_b += x * y;
-                                blob_c += y * y;
+                                x_histogram[x]++;
+                                y_histogram[y]++;
+
+                                if ((points_count < points_max) || grow_points(&points, &points_max)) {
+                                    point_init(&points[points_count], x, y);
+                                    points_count += 1;
+                                }
                             }
                         }
                     }
@@ -931,11 +949,13 @@ bool imlib_get_regression(find_lines_list_lnk_data_t *out,
                                 blob_x2 = IM_MAX(blob_x2, x);
                                 blob_y2 = IM_MAX(blob_y2, y);
                                 blob_pixels += 1;
-                                blob_cx += x;
-                                blob_cy += y;
-                                blob_a += x * x;
-                                blob_b += x * y;
-                                blob_c += y * y;
+                                x_histogram[x]++;
+                                y_histogram[y]++;
+
+                                if ((points_count < points_max) || grow_points(&points, &points_max)) {
+                                    point_init(&points[points_count], x, y);
+                                    points_count += 1;
+                                }
                             }
                         }
                     }
@@ -951,11 +971,13 @@ bool imlib_get_regression(find_lines_list_lnk_data_t *out,
                                 blob_x2 = IM_MAX(blob_x2, x);
                                 blob_y2 = IM_MAX(blob_y2, y);
                                 blob_pixels += 1;
-                                blob_cx += x;
-                                blob_cy += y;
-                                blob_a += x * x;
-                                blob_b += x * y;
-                                blob_c += y * y;
+                                x_histogram[x]++;
+                                y_histogram[y]++;
+
+                                if ((points_count < points_max) || grow_points(&points, &points_max)) {
+                                    point_init(&points[points_count], x, y);
+                                    points_count += 1;
+                                }
                             }
                         }
                     }
@@ -970,237 +992,92 @@ bool imlib_get_regression(find_lines_list_lnk_data_t *out,
         int w = blob_x2 - blob_x1;
         int h = blob_y2 - blob_y1;
         if (blob_pixels && ((w * h) >= area_threshold) && (blob_pixels >= pixels_threshold)) {
-            // http://www.cse.usf.edu/~r1k/MachineVisionBook/MachineVision.files/MachineVision_Chapter2.pdf
-            // https://www.strchr.com/standard_deviation_in_one_pass
-            //
-            // a = sigma(x*x) + (mx*sigma(x)) + (mx*sigma(x)) + (sigma()*mx*mx)
-            // b = sigma(x*y) + (mx*sigma(y)) + (my*sigma(x)) + (sigma()*mx*my)
-            // c = sigma(y*y) + (my*sigma(y)) + (my*sigma(y)) + (sigma()*my*my)
-            //
-            // blob_a = sigma(x*x)
-            // blob_b = sigma(x*y)
-            // blob_c = sigma(y*y)
-            // blob_cx = sigma(x)
-            // blob_cy = sigma(y)
-            // blob_pixels = sigma()
+            long long delta_sum = (points_count * (points_count - 1)) / 2;
 
-            int mx = blob_cx / blob_pixels; // x centroid
-            int my = blob_cy / blob_pixels; // y centroid
-            int small_blob_a = blob_a - ((mx * blob_cx) + (mx * blob_cx)) + (blob_pixels * mx * mx);
-            int small_blob_b = blob_b - ((mx * blob_cy) + (my * blob_cx)) + (blob_pixels * mx * my);
-            int small_blob_c = blob_c - ((my * blob_cy) + (my * blob_cy)) + (blob_pixels * my * my);
+            if (delta_sum) {
+                // The code below computes the average slope between all pairs of points.
+                // This is a N^2 operation that can easily blow up if the image is not threshold carefully...
 
-            float rotation =
-                ((small_blob_a !=
-                  small_blob_c) ? (fast_atan2f(2 * small_blob_b, small_blob_a - small_blob_c) / 2.0f) : 1.570796f) + 1.570796f;                              // PI/2
-
-            out->theta = fast_roundf(rotation * 57.295780) % 180; // * (180 / PI)
-            if (out->theta < 0) {
-                out->theta += 180;
-            }
-            out->rho = fast_roundf(((mx - roi->x) * cos_table[out->theta]) + ((my - roi->y) * sin_table[out->theta]));
-
-            float part0 = (small_blob_a + small_blob_c) / 2.0f;
-            float f_b = (float) small_blob_b;
-            float f_a_c = (float) (small_blob_a - small_blob_c);
-            float part1 = fast_sqrtf((4 * f_b * f_b) + (f_a_c * f_a_c)) / 2.0f;
-            float p_add = fast_sqrtf(part0 + part1);
-            float p_sub = fast_sqrtf(part0 - part1);
-            float e_min = IM_MIN(p_add, p_sub);
-            float e_max = IM_MAX(p_add, p_sub);
-            out->magnitude = fast_roundf(e_max / e_min) - 1; // Circle -> [0, INF) -> Line
-
-            if ((45 <= out->theta) && (out->theta < 135)) {
-                // y = (r - x cos(t)) / sin(t)
-                out->line.x1 = 0;
-                out->line.y1 = fast_roundf((out->rho - (out->line.x1 * cos_table[out->theta])) / sin_table[out->theta]);
-                out->line.x2 = roi->w - 1;
-                out->line.y2 = fast_roundf((out->rho - (out->line.x2 * cos_table[out->theta])) / sin_table[out->theta]);
-            } else {
-                // x = (r - y sin(t)) / cos(t);
-                out->line.y1 = 0;
-                out->line.x1 = fast_roundf((out->rho - (out->line.y1 * sin_table[out->theta])) / cos_table[out->theta]);
-                out->line.y2 = roi->h - 1;
-                out->line.x2 = fast_roundf((out->rho - (out->line.y2 * sin_table[out->theta])) / cos_table[out->theta]);
-            }
-
-            if (lb_clip_line(&out->line, 0, 0, roi->w, roi->h)) {
-                out->line.x1 += roi->x;
-                out->line.y1 += roi->y;
-                out->line.x2 += roi->x;
-                out->line.y2 += roi->y;
-                // Move rho too.
-                out->rho += fast_roundf((roi->x * cos_table[out->theta]) + (roi->y * sin_table[out->theta]));
-                result = true;
-            } else {
-                memset(out, 0, sizeof(find_lines_list_lnk_data_t));
-            }
-        }
-    } else {
-        // Theil-Sen Estimator
-        int *x_histogram = fb_alloc0(ptr->w * sizeof(int), FB_ALLOC_NO_HINT);
-        int *y_histogram = fb_alloc0(ptr->h * sizeof(int), FB_ALLOC_NO_HINT);
-        long long *x_delta_histogram = fb_alloc0((2 * ptr->w) * sizeof(long long), FB_ALLOC_NO_HINT);
-        long long *y_delta_histogram = fb_alloc0((2 * ptr->h) * sizeof(long long), FB_ALLOC_NO_HINT);
-
-        uint32_t size;
-        point_t *points = (point_t *) fb_alloc_all(&size, FB_ALLOC_NO_HINT);
-        size_t points_max = size / sizeof(point_t);
-        size_t points_count = 0;
-
-        if (points_max) {
-            int blob_x1 = roi->x + roi->w - 1;
-            int blob_y1 = roi->y + roi->h - 1;
-            int blob_x2 = roi->x;
-            int blob_y2 = roi->y;
-            int blob_pixels = 0;
-
-            list_for_each(it, thresholds) {
-                color_thresholds_list_lnk_data_t *lnk_data = list_get_data(it);
-
-                switch (ptr->pixfmt) {
-                    case PIXFORMAT_BINARY: {
-                        for (int y = roi->y, yy = roi->y + roi->h; y < yy; y += y_stride) {
-                            uint32_t *row_ptr = IMAGE_COMPUTE_BINARY_PIXEL_ROW_PTR(ptr, y);
-                            for (int x = roi->x + (y % x_stride), xx = roi->x + roi->w; x < xx; x += x_stride) {
-                                if (COLOR_THRESHOLD_BINARY(IMAGE_GET_BINARY_PIXEL_FAST(row_ptr, x), lnk_data, invert)) {
-                                    blob_x1 = IM_MIN(blob_x1, x);
-                                    blob_y1 = IM_MIN(blob_y1, y);
-                                    blob_x2 = IM_MAX(blob_x2, x);
-                                    blob_y2 = IM_MAX(blob_y2, y);
-                                    blob_pixels += 1;
-                                    x_histogram[x]++;
-                                    y_histogram[y]++;
-
-                                    if (points_count < points_max) {
-                                        point_init(&points[points_count], x, y);
-                                        points_count += 1;
-                                    }
-                                }
-                            }
-                        }
-                        break;
-                    }
-                    case PIXFORMAT_GRAYSCALE: {
-                        for (int y = roi->y, yy = roi->y + roi->h; y < yy; y += y_stride) {
-                            uint8_t *row_ptr = IMAGE_COMPUTE_GRAYSCALE_PIXEL_ROW_PTR(ptr, y);
-                            for (int x = roi->x + (y % x_stride), xx = roi->x + roi->w; x < xx; x += x_stride) {
-                                if (COLOR_THRESHOLD_GRAYSCALE(IMAGE_GET_GRAYSCALE_PIXEL_FAST(row_ptr, x), lnk_data, invert)) {
-                                    blob_x1 = IM_MIN(blob_x1, x);
-                                    blob_y1 = IM_MIN(blob_y1, y);
-                                    blob_x2 = IM_MAX(blob_x2, x);
-                                    blob_y2 = IM_MAX(blob_y2, y);
-                                    blob_pixels += 1;
-                                    x_histogram[x]++;
-                                    y_histogram[y]++;
-
-                                    if (points_count < points_max) {
-                                        point_init(&points[points_count], x, y);
-                                        points_count += 1;
-                                    }
-                                }
-                            }
-                        }
-                        break;
-                    }
-                    case PIXFORMAT_RGB565: {
-                        for (int y = roi->y, yy = roi->y + roi->h; y < yy; y += y_stride) {
-                            uint16_t *row_ptr = IMAGE_COMPUTE_RGB565_PIXEL_ROW_PTR(ptr, y);
-                            for (int x = roi->x + (y % x_stride), xx = roi->x + roi->w; x < xx; x += x_stride) {
-                                if (COLOR_THRESHOLD_RGB565(IMAGE_GET_RGB565_PIXEL_FAST(row_ptr, x), lnk_data, invert)) {
-                                    blob_x1 = IM_MIN(blob_x1, x);
-                                    blob_y1 = IM_MIN(blob_y1, y);
-                                    blob_x2 = IM_MAX(blob_x2, x);
-                                    blob_y2 = IM_MAX(blob_y2, y);
-                                    blob_pixels += 1;
-                                    x_histogram[x]++;
-                                    y_histogram[y]++;
-
-                                    if (points_count < points_max) {
-                                        point_init(&points[points_count], x, y);
-                                        points_count += 1;
-                                    }
-                                }
-                            }
-                        }
-                        break;
-                    }
-                    default: {
-                        break;
+                for (int i = 0; i < points_count; i++) {
+                    imlib_poll_events();
+                    point_t *p0 = &points[i];
+                    for (int j = i + 1; j < points_count; j++) {
+                        point_t *p1 = &points[j];
+                        // Note we allocated 1 extra above so we can do ptr->w instead of (ptr->w-1).
+                        x_delta_histogram[p0->x - p1->x + ptr->w]++;
+                        // Note we allocated 1 extra above so we can do ptr->h instead of (ptr->h-1).
+                        y_delta_histogram[p0->y - p1->y + ptr->h]++;
                     }
                 }
-            }
 
-            int w = blob_x2 - blob_x1;
-            int h = blob_y2 - blob_y1;
-            if (blob_pixels && ((w * h) >= area_threshold) && (blob_pixels >= pixels_threshold)) {
-                long long delta_sum = (points_count * (points_count - 1)) / 2;
+                int mx = get_median(x_histogram, blob_pixels, ptr->w); // Output doesn't need adjustment.
+                int my = get_median(y_histogram, blob_pixels, ptr->h); // Output doesn't need adjustment.
+                int mdx = get_median_l(x_delta_histogram, delta_sum, 2 * ptr->w) - ptr->w; // Fix offset.
+                int mdy = get_median_l(y_delta_histogram, delta_sum, 2 * ptr->h) - ptr->h; // Fix offset.
 
-                if (delta_sum) {
-                    // The code below computes the average slope between all pairs of points.
-                    // This is a N^2 operation that can easily blow up if the image is not threshold carefully...
+                float rotation = (mdx ? fast_atan2f(mdy, mdx) : 1.570796f) + 1.570796f; // PI/2
 
-                    for (int i = 0; i < points_count; i++) {
-                        point_t *p0 = &points[i];
-                        for (int j = i + 1; j < points_count; j++) {
-                            point_t *p1 = &points[j];
-                            // Note we allocated 1 extra above so we can do ptr->w instead of (ptr->w-1).
-                            x_delta_histogram[p0->x - p1->x + ptr->w]++;
-                            // Note we allocated 1 extra above so we can do ptr->h instead of (ptr->h-1).
-                            y_delta_histogram[p0->y - p1->y + ptr->h]++;
-                        }
-                    }
+                out->theta = fast_roundf(rotation * 57.295780) % 180; // * (180 / PI)
+                if (out->theta < 0) {
+                    out->theta += 180;
+                }
 
-                    int mx = get_median(x_histogram, blob_pixels, ptr->w); // Output doesn't need adjustment.
-                    int my = get_median(y_histogram, blob_pixels, ptr->h); // Output doesn't need adjustment.
-                    int mdx = get_median_l(x_delta_histogram, delta_sum, 2 * ptr->w) - ptr->w; // Fix offset.
-                    int mdy = get_median_l(y_delta_histogram, delta_sum, 2 * ptr->h) - ptr->h; // Fix offset.
+                // Sanity-snap theta against the per-axis histogram peaks. The
+                // raster-order pair iteration biases mdy negative, which can
+                // tilt thick horizontal blobs even when theta lands in the
+                // horizontal hemisphere.
+                int x_peak = 0;
+                for (int i = 0; i < ptr->w; i++) {
+                    x_peak = IM_MAX(x_peak, x_histogram[i]);
+                }
+                int y_peak = 0;
+                for (int i = 0; i < ptr->h; i++) {
+                    y_peak = IM_MAX(y_peak, y_histogram[i]);
+                }
+                if (y_peak > (3 * x_peak)) {
+                    out->theta = 90; // points concentrated along a row -> horizontal
+                } else if (x_peak > (3 * y_peak)) {
+                    out->theta = 0;  // points concentrated along a column -> vertical
+                }
 
-                    float rotation = (mdx ? fast_atan2f(mdy, mdx) : 1.570796f) + 1.570796f; // PI/2
+                out->rho = fast_roundf(((mx - roi->x) * cos_table[out->theta]) + ((my - roi->y) * sin_table[out->theta]));
 
-                    out->theta = fast_roundf(rotation * 57.295780) % 180; // * (180 / PI)
-                    if (out->theta < 0) {
-                        out->theta += 180;
-                    }
-                    out->rho = fast_roundf(((mx - roi->x) * cos_table[out->theta]) + ((my - roi->y) * sin_table[out->theta]));
+                out->magnitude = fast_roundf(fast_sqrtf((mdx * mdx) + (mdy * mdy)));
 
-                    out->magnitude = fast_roundf(fast_sqrtf((mdx * mdx) + (mdy * mdy)));
+                if ((45 <= out->theta) && (out->theta < 135)) {
+                    // y = (r - x cos(t)) / sin(t)
+                    out->line.x1 = 0;
+                    out->line.y1 = fast_roundf((out->rho - (out->line.x1 * cos_table[out->theta])) / sin_table[out->theta]);
+                    out->line.x2 = roi->w - 1;
+                    out->line.y2 = fast_roundf((out->rho - (out->line.x2 * cos_table[out->theta])) / sin_table[out->theta]);
+                } else {
+                    // x = (r - y sin(t)) / cos(t);
+                    out->line.y1 = 0;
+                    out->line.x1 = fast_roundf((out->rho - (out->line.y1 * sin_table[out->theta])) / cos_table[out->theta]);
+                    out->line.y2 = roi->h - 1;
+                    out->line.x2 = fast_roundf((out->rho - (out->line.y2 * sin_table[out->theta])) / cos_table[out->theta]);
+                }
 
-                    if ((45 <= out->theta) && (out->theta < 135)) {
-                        // y = (r - x cos(t)) / sin(t)
-                        out->line.x1 = 0;
-                        out->line.y1 = fast_roundf((out->rho - (out->line.x1 * cos_table[out->theta])) / sin_table[out->theta]);
-                        out->line.x2 = roi->w - 1;
-                        out->line.y2 = fast_roundf((out->rho - (out->line.x2 * cos_table[out->theta])) / sin_table[out->theta]);
-                    } else {
-                        // x = (r - y sin(t)) / cos(t);
-                        out->line.y1 = 0;
-                        out->line.x1 = fast_roundf((out->rho - (out->line.y1 * sin_table[out->theta])) / cos_table[out->theta]);
-                        out->line.y2 = roi->h - 1;
-                        out->line.x2 = fast_roundf((out->rho - (out->line.y2 * sin_table[out->theta])) / cos_table[out->theta]);
-                    }
-
-                    if (lb_clip_line(&out->line, 0, 0, roi->w, roi->h)) {
-                        out->line.x1 += roi->x;
-                        out->line.y1 += roi->y;
-                        out->line.x2 += roi->x;
-                        out->line.y2 += roi->y;
-                        // Move rho too.
-                        out->rho += fast_roundf((roi->x * cos_table[out->theta]) + (roi->y * sin_table[out->theta]));
-                        result = true;
-                    } else {
-                        memset(out, 0, sizeof(find_lines_list_lnk_data_t));
-                    }
+                if (lb_clip_line(&out->line, 0, 0, roi->w, roi->h)) {
+                    out->line.x1 += roi->x;
+                    out->line.y1 += roi->y;
+                    out->line.x2 += roi->x;
+                    out->line.y2 += roi->y;
+                    // Move rho too.
+                    out->rho += fast_roundf((roi->x * cos_table[out->theta]) + (roi->y * sin_table[out->theta]));
+                    result = true;
+                } else {
+                    memset(out, 0, sizeof(find_lines_list_lnk_data_t));
                 }
             }
         }
-
-        fb_free(); // points
-        fb_free(); // y_delta_histogram
-        fb_free(); // x_delta_histogram
-        fb_free(); // y_histogram
-        fb_free(); // x_histogram
     }
+
+    uma_free(points);
+    uma_free(y_delta_histogram);
+    uma_free(x_delta_histogram);
+    uma_free(y_histogram);
+    uma_free(x_histogram);
 
     return result;
 }

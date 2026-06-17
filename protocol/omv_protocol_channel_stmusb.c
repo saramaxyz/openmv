@@ -32,7 +32,7 @@
 #include "omv_common.h"
 #include "cmsis_gcc.h"
 #include "omv_protocol.h"
-#include "omv_boardconfig.h"
+#include "board_config.h"
 #undef MIN
 #undef MAX
 #include "usbd_cdc_msc_hid.h"
@@ -65,7 +65,7 @@ static int usb_channel_write(const omv_protocol_channel_t *channel, uint32_t off
 
 static void usb_channel_task(mp_sched_node_t *node) {
     if (usb_channel_active) {
-        omv_protocol_task();
+        omv_protocol_poll();
     }
 }
 

@@ -30,7 +30,7 @@
 #include STM32_HAL_H
 #include "py/mphal.h"
 
-#include "omv_boardconfig.h"
+#include "board_config.h"
 #include "irq.h"
 #include "omv_common.h"
 #include "stm_dma.h"
@@ -499,7 +499,7 @@ int omv_spi_deinit(omv_spi_t *spi) {
     return 0;
 }
 
-// This function is only needed for the py_tv driver on the RT1060 to slow down the SPI bus on reads.
+// This function is only needed for the TVDisplay driver on the RT1060 to slow down the SPI bus on reads.
 // The STM32 is capable of reading data on the SPI bus at high speeds without issues...
 int omv_spi_set_baudrate(omv_spi_t *spi, uint32_t baudrate) {
     return 0;

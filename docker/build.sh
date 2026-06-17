@@ -5,12 +5,11 @@ BUILD_DIR=/workspace/build/${TARGET}
 
 # Update submodules.
 git submodule update --init --depth=1
-make -j$(nproc) TARGET=${TARGET} submodules
 
-# Build the firmware.
+# Run the per-target clean separately (build-dev.sh skips this for
+# incremental builds), then delegate to the shared build sequence.
 make -j$(nproc) BUILD=${BUILD_DIR} clean
-make -j$(nproc) -C lib/micropython/mpy-cross
-make -j$(nproc) BUILD=${BUILD_DIR} TARGET=${TARGET}
+BUILD_OPTS="BUILD=${BUILD_DIR}" source "$(dirname "$0")/build-common.sh"
 
 # Fix permissions.
 chown -R ${HOST_UID:-1000}:${HOST_GID:-1000} /workspace/build

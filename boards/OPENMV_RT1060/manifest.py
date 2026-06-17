@@ -28,6 +28,7 @@ freeze ("$(OMV_LIB_DIR)/", "rpc.py")
 freeze ("$(OMV_LIB_DIR)/", "rtsp.py")
 freeze ("$(OMV_LIB_DIR)/", "mqtt.py")
 freeze ("$(OMV_LIB_DIR)/", "requests.py")
+require("microdot-lib")
 
 # Utils
 require("time")
@@ -37,6 +38,7 @@ freeze ("$(OMV_LIB_DIR)/", "mutex.py")
 
 # Libraries
 require("ml", library="openmv-lib")
+require("protocol", library="openmv-lib")
 include("$(MPY_DIR)/extmod/asyncio")
 
 # Boot script

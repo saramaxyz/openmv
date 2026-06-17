@@ -34,7 +34,6 @@ HAL_SRC_C += \
 	se_services/source/services_host_system.c \
 	se_services/source/services_host_maintenance.c \
 	Device/common/source/clk.c \
-	Device/common/source/dcd.c \
 	Device/common/source/pm.c \
 	Device/common/source/mpu_M55.c \
 	Device/common/source/tgu_M55.c \
@@ -42,6 +41,10 @@ HAL_SRC_C += \
 	Device/common/source/system_utils.c \
 	Device/common/source/tcm_partition.c \
 	Device/core/$(MCU_CORE)/source/startup_$(MCU_CORE).c \
+
+ifeq ($(MCU_CORE),M55_HP)
+HAL_SRC_C += Device/common/source/dcd.c
+endif
 
 HAL_CFLAGS += -I$(TOP_DIR)/lib/alif/drivers/include/
 HAL_CFLAGS += -I$(TOP_DIR)/lib/alif/ospi_xip/source/ospi/

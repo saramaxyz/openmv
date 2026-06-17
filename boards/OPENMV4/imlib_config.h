@@ -33,7 +33,7 @@
 #define IMLIB_ENABLE_MATH_OPS
 
 // Enable flood_fill()
-#define IMLIB_ENABLE_FLOOD_FILL
+// #define IMLIB_ENABLE_FLOOD_FILL
 
 // Enable mean()
 #define IMLIB_ENABLE_MEAN
@@ -117,7 +117,7 @@
 #define IMLIB_ENABLE_AGAST
 
 // Enable find_template()
-#define IMLIB_FIND_TEMPLATE
+// #define IMLIB_FIND_TEMPLATE
 
 // Enable find_lbp()
 #define IMLIB_ENABLE_FIND_LBP

@@ -35,15 +35,16 @@
 #include <math.h>
 #include <arm_math.h>
 #include <cmsis_extension.h>
-#include "fb_alloc.h"
 #include "file_utils.h"
-#include "umm_malloc.h"
+#include "umalloc.h"
 #include "array.h"
 #include "fmath.h"
 #include "collections.h"
 #include "imlib_config.h"
-#include "omv_boardconfig.h"
+#include "board_config.h"
 #include "omv_common.h"
+#include "omv_cycles.h"
+#include "py/runtime.h"
 #include "omv_profiler.h"
 #include "py/runtime.h"
 
@@ -117,6 +118,30 @@
 
 #define IM_DEG2RAD(x)            (((x) * IMLIB_PI) / 180.0f)
 #define IM_RAD2DEG(x)            (((x) * 180.0f) / IMLIB_PI)
+
+#ifndef IMLIB_POLL_INTERVAL_CYC
+#define IMLIB_POLL_INTERVAL_CYC  (20UL * OMV_CYCLES_PER_MS)
+#endif
+
+extern uint32_t imlib_last_poll_cyc;
+
+#define imlib_poll_events()                                        \
+    do {                                                           \
+        if ((uint32_t) (omv_cycles_now() - imlib_last_poll_cyc) >= \
+            IMLIB_POLL_INTERVAL_CYC) {                             \
+            imlib_last_poll_cyc = omv_cycles_now();                \
+            mp_event_handle_nowait();                              \
+        }                                                          \
+    } while (0)
+
+#define imlib_poll_events_noexc()                                  \
+    do {                                                           \
+        if ((uint32_t) (omv_cycles_now() - imlib_last_poll_cyc) >= \
+            IMLIB_POLL_INTERVAL_CYC) {                             \
+            imlib_last_poll_cyc = omv_cycles_now();                \
+            mp_handle_pending(MP_HANDLE_PENDING_CALLBACKS_ONLY);   \
+        }                                                          \
+    } while (0)
 
 int imlib_ksize_to_n(int ksize);
 
@@ -577,10 +602,7 @@ typedef struct image {
     PIXFORMAT_STRUCT;
     // Keeps a reference to the GC block when used with image_alloc/image_alloc0.
     uint8_t *_raw;
-    union {
-        uint8_t *pixels;
-        uint8_t *data;
-    };
+    uint8_t *data;
 } image_t;
 
 void image_alloc(image_t *img, size_t size);
@@ -852,27 +874,27 @@ extern const int kernel_high_pass_3[9];
     ({ __typeof__ (img) _img = (img); \
        __typeof__ (x) _x = (x);       \
        __typeof__ (y) _y = (y);       \
-       ((uint8_t *) _img->pixels)[(_y * _img->w) + _x]; })
+       ((uint8_t *) _img->data)[(_y * _img->w) + _x]; })
 
 #define IM_GET_RGB565_PIXEL(img, x, y) \
     ({ __typeof__ (img) _img = (img);  \
        __typeof__ (x) _x = (x);        \
        __typeof__ (y) _y = (y);        \
-       ((uint16_t *) _img->pixels)[(_y * _img->w) + _x]; })
+       ((uint16_t *) _img->data)[(_y * _img->w) + _x]; })
 
 #define IM_SET_GS_PIXEL(img, x, y, p) \
     ({ __typeof__ (img) _img = (img); \
        __typeof__ (x) _x = (x);       \
        __typeof__ (y) _y = (y);       \
        __typeof__ (p) _p = (p);       \
-       ((uint8_t *) _img->pixels)[(_y * _img->w) + _x] = _p; })
+       ((uint8_t *) _img->data)[(_y * _img->w) + _x] = _p; })
 
 #define IM_SET_RGB565_PIXEL(img, x, y, p) \
     ({ __typeof__ (img) _img = (img);     \
        __typeof__ (x) _x = (x);           \
        __typeof__ (y) _y = (y);           \
        __typeof__ (p) _p = (p);           \
-       ((uint16_t *) _img->pixels)[(_y * _img->w) + _x] = _p; })
+       ((uint16_t *) _img->data)[(_y * _img->w) + _x] = _p; })
 
 #define IM_EQUAL(img0, img1)             \
     ({ __typeof__ (img0) _img0 = (img0); \
@@ -880,7 +902,7 @@ extern const int kernel_high_pass_3[9];
        (_img0->w == _img1->w) && (_img0->h == _img1->h) && (_img0->pixfmt = _img1->pixfmt); })
 
 #define IM_TO_GS_PIXEL(img, x, y) \
-    (img->bpp == 1 ? img->pixels[((y) * img->w) + (x)] : COLOR_RGB565_TO_Y(((uint16_t *) img->pixels)[((y) * img->w) + (x)]) )
+    (img->bpp == 1 ? img->data[((y) * img->w) + (x)] : COLOR_RGB565_TO_Y(((uint16_t *) img->data)[((y) * img->w) + (x)]) )
 
 typedef struct simple_color {
     uint8_t G;          // Gray
@@ -950,7 +972,7 @@ typedef struct cascade {
     int std;                        // Image standard deviation.
     int step;                       // Image scanning factor.
     float threshold;                // Detection threshold.
-    float scale_factor;             // Image scaling factor.
+    float scale;                    // Image scaling factor.
     int n_stages;                   // Number of stages in the cascade.
     int n_features;                 // Number of features in the cascade.
     int n_rectangles;               // Number of rectangles in the cascade.
@@ -1363,8 +1385,6 @@ void imlib_find_hog(image_t *src, rectangle_t *roi, int cell_size);
 
 // Helper Functions
 void imlib_zero(image_t *img, image_t *mask, bool invert);
-void imlib_draw_row_setup(imlib_draw_row_data_t *data);
-void imlib_draw_row_teardown(imlib_draw_row_data_t *data);
 void imlib_draw_row(int x_start, int x_end, int y_row, imlib_draw_row_data_t *data);
 void imlib_draw_image_get_bounds(image_t *dst_img,
                                  image_t *src_img,
@@ -1480,8 +1500,8 @@ void imlib_bilateral_filter(image_t *img,
                             bool invert,
                             image_t *mask);
 // Image Correction
-void imlib_logpolar_int(image_t *dst, image_t *src, rectangle_t *roi, bool linear, bool reverse); // helper/internal
-void imlib_logpolar(image_t *img, bool linear, bool reverse);
+void imlib_logpolar_int(image_t *dst, image_t *src, rectangle_t *roi, int cx, int cy, bool linear, bool reverse); // helper/internal
+void imlib_logpolar(image_t *img, int cx, int cy, bool linear, bool reverse);
 // Lens/Rotation Correction
 void imlib_lens_corr(image_t *img, float strength, float zoom, float x_corr, float y_corr);
 void imlib_rotation_corr(image_t *img, float x_rotation, float y_rotation,
@@ -1517,8 +1537,7 @@ bool imlib_get_regression(find_lines_list_lnk_data_t *out,
                           list_t *thresholds,
                           bool invert,
                           unsigned int area_threshold,
-                          unsigned int pixels_threshold,
-                          bool robust);
+                          unsigned int pixels_threshold);
 // Color Tracking
 void imlib_find_blobs(list_t *out, image_t *ptr, rectangle_t *roi, unsigned int x_stride, unsigned int y_stride,
                       list_t *thresholds, bool invert, unsigned int area_threshold, unsigned int pixels_threshold,
@@ -1531,19 +1550,12 @@ size_t trace_line(image_t *ptr, line_t *l, int *theta_buffer, uint32_t *mag_buff
 void merge_alot(list_t *out, int threshold, int theta_threshold); // helper/internal
 void imlib_find_lines(list_t *out, image_t *ptr, rectangle_t *roi, unsigned int x_stride, unsigned int y_stride,
                       uint32_t threshold, unsigned int theta_margin, unsigned int rho_margin);
-void imlib_lsd_find_line_segments(list_t *out,
-                                  image_t *ptr,
-                                  rectangle_t *roi,
-                                  unsigned int merge_distance,
-                                  unsigned int max_theta_diff);
-void imlib_find_line_segments(list_t *out, image_t *ptr, rectangle_t *roi, unsigned int x_stride, unsigned int y_stride,
-                              uint32_t threshold, unsigned int theta_margin, unsigned int rho_margin,
-                              uint32_t segment_threshold);
+void imlib_edl_find_line_segments(list_t *out, image_t *ptr, rectangle_t *roi,
+                                  unsigned int merge_distance, unsigned int max_theta_diff, unsigned int threshold);
 void imlib_find_circles(list_t *out, image_t *ptr, rectangle_t *roi, unsigned int x_stride, unsigned int y_stride,
                         uint32_t threshold, unsigned int x_margin, unsigned int y_margin, unsigned int r_margin,
                         unsigned int r_min, unsigned int r_max, unsigned int r_step);
-void imlib_find_rects(list_t *out, image_t *ptr, rectangle_t *roi,
-                      uint32_t threshold);
+void imlib_find_rects(list_t *out, image_t *ptr, rectangle_t *roi, uint32_t threshold);
 // 1/2D Bar Codes
 void imlib_find_qrcodes(list_t *out, image_t *ptr, rectangle_t *roi);
 void imlib_find_apriltags(list_t *out, image_t *ptr, rectangle_t *roi, apriltag_families_t families,

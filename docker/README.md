@@ -5,10 +5,30 @@ To build the firmware using docker, follow the following steps:
 ```
 git clone https://github.com/openmv/openmv.git --depth=1
 cd openmv/docker
-make TARGET=<TARGET NAME>
+make SDK_DIR=<path/to/openmv-sdk> TARGET=<TARGET NAME>
 ```
 
-After building you should see the target build output under `docker/build/<TARGET_NAME>`.
+The `SDK_DIR` variable should point to the OpenMV SDK installation directory (defaults to `$HOME/openmv-sdk-<version>`).
+
+After building you should see the target build output under `build/<TARGET_NAME>`.
+
+## Local Development Build
+
+For local iteration there is a parallel `build-firmware-dev` target that mounts the repository (and SDK) at the same absolute path inside the container as on the host. This keeps debug info paths in build artifacts matching the host filesystem, so gdb, addr2line and IDE source navigation work without remapping. It also supports git worktrees and skips the up-front `make clean` so subsequent runs are incremental.
+
+```
+cd openmv/docker
+make install-sdk                                 # download SDK pinned by SDK_VERSION
+make build-firmware-dev TARGET=<TARGET NAME>
+make shell-dev                                   # interactive container shell
+make clean-dev                                   # wipe the build directory
+```
+
+`install-sdk` fetches the version pinned in the repo's `SDK_VERSION` file from `https://download.openmv.io/sdk` and extracts it to `$HOME/openmv-sdk-<version>`. It's idempotent and verifies the sha256. It only needs `wget`, `tar`, and `sha256sum` on the host (no docker required).
+
+When switching `TARGET` between dev builds, run `make clean-dev` first. Per-target build directories are isolated, but `lib/micropython/mpy-cross` is shared and may need to be rebuilt against the new target's headers.
+
+The default `make` target (`build-firmware`) is unchanged and remains the recommended path for reproducible/CI builds.
 
 ## Testing HTTP POST/GET
 

@@ -33,13 +33,17 @@
 #include "imlib.h"
 #include "omv_common.h"
 #include "omv_gpu.h"
-#include "omv_boardconfig.h"
+#include "board_config.h"
+#include "simd.h"
 
 #ifdef IMLIB_ENABLE_GAMMA_LUT
 uint8_t gamma_table[256];
 #endif
 
+uint32_t imlib_last_poll_cyc;
+
 void imlib_init() {
+    omv_cycles_init();
     #if (OMV_GPU_ENABLE == 1)
     omv_gpu_init();
     #endif
@@ -649,8 +653,8 @@ static save_image_format_t imblib_parse_extension(image_t *img, const char *path
 }
 
 bool imlib_read_geometry(file_t *fp, image_t *img, const char *path, img_read_settings_t *rs) {
-    char magic[4];
-    file_open(fp, path, false, FA_READ | FA_OPEN_EXISTING);
+    uint8_t magic[4];
+    file_open(fp, path, FA_READ | FA_OPEN_EXISTING);
     file_read(fp, &magic, 4);
     file_close(fp);
 
@@ -660,25 +664,23 @@ bool imlib_read_geometry(file_t *fp, image_t *img, const char *path, img_read_se
             || (magic[1] == '5') || (magic[1] == '6'))) {
         // PPM
         rs->format = FORMAT_PNM;
-        file_open(fp, path, true, FA_READ | FA_OPEN_EXISTING);
+        file_open(fp, path, FA_READ | FA_OPEN_EXISTING);
         ppm_read_geometry(fp, img, path, &rs->ppm_rs);
     } else if ((magic[0] == 'B') && (magic[1] == 'M')) {
         // BMP
         rs->format = FORMAT_BMP;
-        file_open(fp, path, true, FA_READ | FA_OPEN_EXISTING);
+        file_open(fp, path, FA_READ | FA_OPEN_EXISTING);
         vflipped = bmp_read_geometry(fp, img, path, &rs->bmp_rs);
     } else if ((magic[0] == 0xFF) && (magic[1] == 0xD8)) {
         // JPG
         rs->format = FORMAT_JPG;
-        file_open(fp, path, false, FA_READ | FA_OPEN_EXISTING);
+        file_open(fp, path, FA_READ | FA_OPEN_EXISTING);
         jpeg_read_geometry(fp, img, path, &rs->jpg_rs);
-        file_buffer_on(fp);
     } else if ((magic[0] == 0x89) && (magic[1] == 0x50) && (magic[2] == 0x4E) && (magic[3] == 0x47)) {
         // PNG
         rs->format = FORMAT_PNG;
-        file_open(fp, path, false, FA_READ | FA_OPEN_EXISTING);
+        file_open(fp, path, FA_READ | FA_OPEN_EXISTING);
         png_read_geometry(fp, img, path, &rs->png_rs);
-        file_buffer_on(fp);
     } else {
         file_raise_format(NULL);
     }
@@ -690,8 +692,8 @@ bool imlib_read_geometry(file_t *fp, image_t *img, const char *path, img_read_se
 #if defined(IMLIB_ENABLE_IMAGE_FILE_IO)
 void imlib_load_image(image_t *img, const char *path) {
     file_t fp;
-    char magic[4];
-    file_open(&fp, path, false, FA_READ | FA_OPEN_EXISTING);
+    uint8_t magic[4];
+    file_open(&fp, path, FA_READ | FA_OPEN_EXISTING);
     file_read(&fp, &magic, 4);
     file_close(&fp);
 
@@ -725,8 +727,8 @@ void imlib_save_image(image_t *img, const char *path, rectangle_t *roi, int qual
             break;
         case FORMAT_RAW: {
             file_t fp;
-            file_open(&fp, path, false, FA_WRITE | FA_CREATE_ALWAYS);
-            file_write(&fp, img->pixels, img->w * img->h);
+            file_open(&fp, path, FA_WRITE | FA_CREATE_ALWAYS);
+            file_write(&fp, img->data, img->w * img->h);
             file_close(&fp);
             break;
         }
@@ -739,25 +741,25 @@ void imlib_save_image(image_t *img, const char *path, rectangle_t *roi, int qual
         case FORMAT_DONT_CARE:
             // Path doesn't have an extension.
             if (IM_IS_JPEG(img)) {
-                char *new_path = strcat(strcpy(fb_alloc(strlen(path) + 5, FB_ALLOC_NO_HINT), path), ".jpg");
+                char *new_path = strcat(strcpy(uma_malloc(strlen(path) + 5, 0), path), ".jpg");
                 jpeg_write(img, new_path, quality);
-                fb_free();
+                uma_free(new_path);
             } else if (img->pixfmt == PIXFORMAT_PNG) {
-                char *new_path = strcat(strcpy(fb_alloc(strlen(path) + 5, FB_ALLOC_NO_HINT), path), ".png");
+                char *new_path = strcat(strcpy(uma_malloc(strlen(path) + 5, 0), path), ".png");
                 png_write(img, new_path);
-                fb_free();
+                uma_free(new_path);
             } else if (IM_IS_BAYER(img)) {
                 file_t fp;
-                char *new_path = strcat(strcpy(fb_alloc(strlen(path) + 5, FB_ALLOC_NO_HINT), path), ".raw");
-                file_open(&fp, new_path, false, FA_WRITE | FA_CREATE_ALWAYS);
-                file_write(&fp, img->pixels, img->w * img->h);
+                char *new_path = strcat(strcpy(uma_malloc(strlen(path) + 5, 0), path), ".raw");
+                file_open(&fp, new_path, FA_WRITE | FA_CREATE_ALWAYS);
+                file_write(&fp, img->data, img->w * img->h);
                 file_close(&fp);
-                fb_free();
+                uma_free(new_path);
             } else {
                 // RGB or GS, save as BMP.
-                char *new_path = strcat(strcpy(fb_alloc(strlen(path) + 5, FB_ALLOC_NO_HINT), path), ".bmp");
+                char *new_path = strcat(strcpy(uma_malloc(strlen(path) + 5, 0), path), ".bmp");
                 bmp_write_subimg(img, new_path, roi);
-                fb_free();
+                uma_free(new_path);
             }
             break;
     }
@@ -825,12 +827,12 @@ void imlib_lens_corr(image_t *img, float strength, float zoom, float x_corr, flo
 
     // Create a tmp copy of the image to pull pixels from.
     size_t size = image_size(img);
-    void *data = fb_alloc(size, FB_ALLOC_NO_HINT);
+    void *data = uma_malloc(size, 0);
     memcpy(data, img->data, size);
     memset(img->data, 0, size);
 
     int maximum_radius = fast_ceilf(maximum_diameter / 2) + 1; // +1 inclusive of final value
-    float *precalculated_table = fb_alloc(maximum_radius * sizeof(float), FB_ALLOC_NO_HINT);
+    float *precalculated_table = uma_malloc(maximum_radius * sizeof(float), UMA_DTCM);
 
     for (int i = 0; i < maximum_radius; i++) {
         float r = lens_corr_diameter * i;
@@ -1002,8 +1004,8 @@ void imlib_lens_corr(image_t *img, float strength, float zoom, float x_corr, flo
         }
     }
 
-    fb_free(); // precalculated_table
-    fb_free(); // data
+    uma_free(precalculated_table);
+    uma_free(data);
 }
 #endif //IMLIB_ENABLE_LENS_CORR
 
@@ -1022,7 +1024,7 @@ int imlib_image_mean(image_t *src, int *r_mean, int *g_mean, int *b_mean) {
         }
         case PIXFORMAT_GRAYSCALE: {
             for (int i = 0; i < n; i++) {
-                r_s += src->pixels[i];
+                r_s += src->data[i];
             }
             *r_mean = r_s / n;
             *g_mean = r_s / n;
@@ -1031,7 +1033,7 @@ int imlib_image_mean(image_t *src, int *r_mean, int *g_mean, int *b_mean) {
         }
         case PIXFORMAT_RGB565: {
             for (int i = 0; i < n; i++) {
-                uint16_t p = ((uint16_t *) src->pixels)[i];
+                uint16_t p = ((uint16_t *) src->data)[i];
                 r_s += COLOR_RGB565_TO_R8(p);
                 g_s += COLOR_RGB565_TO_G8(p);
                 b_s += COLOR_RGB565_TO_B8(p);
@@ -1054,7 +1056,7 @@ int imlib_image_std(image_t *src) {
     int w = src->w;
     int h = src->h;
     int n = w * h;
-    uint8_t *data = src->pixels;
+    uint8_t *data = src->data;
 
     uint32_t s = 0, sq = 0;
     for (int i = 0; i < n; i += 2) {
@@ -1078,34 +1080,76 @@ int imlib_image_std(image_t *src) {
     return fast_sqrtf(v);
 }
 
-void imlib_sepconv3(image_t *img, const int8_t *krn, const float m, const int b) {
-    int ksize = 3;
-    // TODO: Support RGB
-    int *buffer = fb_alloc(img->w * sizeof(*buffer) * 2, FB_ALLOC_NO_HINT);
+// Vertical pass: convolve 3 rows with kernel, store u16 results.
+// Border: clamps row index to [0, h-1].
+static inline void sepconv3_vpass(uint8_t *data, int w, int h, int y,
+                                  int8_t k0, int8_t k1, int8_t k2,
+                                  uint16_t *vrow) {
+    int y0 = y > 0 ? y - 1 : 0;
+    int y2 = y < h - 1 ? y + 1 : h - 1;
+    uint8_t *r0 = data + y0 * w;
+    uint8_t *r1 = data + y * w;
+    uint8_t *r2 = data + y2 * w;
 
-    // NOTE: This doesn't deal with borders right now. Adding if
-    // statements in the inner loop will slow it down significantly.
-    for (int y = 0; y < img->h - ksize; y++) {
-        for (int x = 0; x < img->w; x++) {
-            int acc = 0;
-            //if (IM_X_INSIDE(img, x+k) && IM_Y_INSIDE(img, y+j))
-            acc = __SMLAD(krn[0], IM_GET_GS_PIXEL(img, x, y + 0), acc);
-            acc = __SMLAD(krn[1], IM_GET_GS_PIXEL(img, x, y + 1), acc);
-            acc = __SMLAD(krn[2], IM_GET_GS_PIXEL(img, x, y + 2), acc);
-            buffer[((y % 2) * img->w) + x] = acc;
-        }
+    int x = 0;
+    for (; x <= w - (int) UINT8_VECTOR_SIZE; x += UINT8_VECTOR_SIZE) {
+        v128_t p0 = vldr_u8(r0 + x);
+        v128_t p1 = vldr_u8(r1 + x);
+        v128_t p2 = vldr_u8(r2 + x);
+
+        // Even bytes -> u16
+        v128_t lo = vmla_n_u16(vuxtb16(p0), k0, vdup_u16(0));
+        lo = vmla_n_u16(vuxtb16(p1), k1, lo);
+        lo = vmla_n_u16(vuxtb16(p2), k2, lo);
+
+        // Odd bytes -> u16
+        v128_t hi = vmla_n_u16(vuxtb16_ror8(p0), k0, vdup_u16(0));
+        hi = vmla_n_u16(vuxtb16_ror8(p1), k1, hi);
+        hi = vmla_n_u16(vuxtb16_ror8(p2), k2, hi);
+
+        // Interleave even/odd back to sequential order
+        vst2_u16(vrow + x, (v2x_rows_t) { .r0 = lo, .r1 = hi });
+    }
+    for (; x < w; x++) {
+        vrow[x] = k0 * r0[x] + k1 * r1[x] + k2 * r2[x];
+    }
+}
+
+// Horizontal pass: convolve u16 row with kernel, scale, clamp, store u8.
+// Border: clamps column index to [0, w-1].
+static inline void sepconv3_hpass(uint16_t *prev, uint8_t *dst, int w,
+                                  int8_t k0, int8_t k1, int8_t k2,
+                                  float m, int b) {
+    for (int x = 0; x < w; x++) {
+        int x0 = x > 0 ? x - 1 : 0;
+        int x2 = x < w - 1 ? x + 1 : w - 1;
+        int acc = k0 * prev[x0] + k1 * prev[x] + k2 * prev[x2];
+        acc = (int) (acc * m) + b;
+        dst[x] = (uint8_t) __USAT(acc, 8);
+    }
+}
+
+void imlib_sepconv3(image_t *img, const int8_t *krn, const float m, const int b) {
+    int w = img->w;
+    int h = img->h;
+    uint8_t *data = img->data;
+    int8_t k0 = krn[0], k1 = krn[1], k2 = krn[2];
+
+    // Ping-pong buffer: 2 rows of u16 (max value 4*255=1020, fits u16).
+    uint16_t *vbuf = uma_malloc(w * sizeof(uint16_t) * 2, UMA_DTCM);
+
+    for (int y = 0; y < h; y++) {
+        uint16_t *vrow = vbuf + (y & 1) * w;
+        sepconv3_vpass(data, w, h, y, k0, k1, k2, vrow);
+
         if (y > 0) {
-            // flush buffer
-            for (int x = 0; x < img->w - ksize; x++) {
-                int acc = 0;
-                acc = __SMLAD(krn[0], buffer[((y - 1) % 2) * img->w + x + 0], acc);
-                acc = __SMLAD(krn[1], buffer[((y - 1) % 2) * img->w + x + 1], acc);
-                acc = __SMLAD(krn[2], buffer[((y - 1) % 2) * img->w + x + 2], acc);
-                acc = (acc * m) + b; // scale, offset, and clamp
-                acc = __USAT(acc, 8);
-                IM_SET_GS_PIXEL(img, (x + 1), (y), acc);
-            }
+            uint16_t *prev = vbuf + ((y - 1) & 1) * w;
+            sepconv3_hpass(prev, data + (y - 1) * w, w, k0, k1, k2, m, b);
         }
     }
-    fb_free();
+
+    // Final flush for the last row.
+    sepconv3_hpass(vbuf + ((h - 1) & 1) * w, data + (h - 1) * w, w, k0, k1, k2, m, b);
+
+    uma_free(vbuf);
 }

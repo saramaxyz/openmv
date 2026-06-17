@@ -26,7 +26,7 @@
 
 #include "omv_common.h"
 #include "omv_protocol.h"
-#include "omv_boardconfig.h"
+#include "board_config.h"
 #include "framebuffer.h"
 
 
@@ -40,23 +40,16 @@ static bool stream_channel_poll(const omv_protocol_channel_t *channel) {
 
 static int stream_channel_lock(const omv_protocol_channel_t *channel) {
     framebuffer_t *fb = framebuffer_get(FB_STREAM_ID);
-    if (!mutex_try_lock(&fb->lock, MUTEX_TID_IDE)) {
-        return -1;
-    }
-    // Size can be checked safetly after acquiring the lock.
     size_t size = channel->size(channel);
-    if (!size) {
-        mutex_unlock(&fb->lock, MUTEX_TID_IDE);
-        return -1;
-    }
-    return 0;
+    // Attempt locking only if the stream is ready.
+    return size && mutex_try_lock(&fb->lock, MUTEX_TID_IDE) ? 0 : -1;
 }
 
 static int stream_channel_unlock(const omv_protocol_channel_t *channel) {
     framebuffer_t *fb = framebuffer_get(FB_STREAM_ID);
-    if (mutex_unlock(&fb->lock, MUTEX_TID_IDE)) {
-        // Reset header even if we don't hold the lock
+    if (mutex_get_tid(&fb->lock) == MUTEX_TID_IDE) {
         memset(fb->raw_base, 0, sizeof(framebuffer_header_t));
+        mutex_unlock(&fb->lock, MUTEX_TID_IDE);
     }
     return 0;
 }
@@ -113,6 +106,9 @@ static int stream_channel_ioctl(const omv_protocol_channel_t *channel, uint32_t 
             return 0;
         case OMV_CHANNEL_IOCTL_STREAM_RAW_CTRL:
             fb->raw_enabled = u.args[0];
+            return 0;
+        case OMV_CHANNEL_IOCTL_STREAM_SOURCE:
+            fb->source = u.args[0];
             return 0;
         default:
             return -1;

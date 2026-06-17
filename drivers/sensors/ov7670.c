@@ -23,7 +23,7 @@
  *
  * OV7670 driver.
  */
-#include "omv_boardconfig.h"
+#include "board_config.h"
 #if (OMV_OV7670_ENABLE == 1)
 
 #include <stdint.h>
@@ -466,7 +466,6 @@ int ov7670_init(omv_csi_t *csi) {
     csi->vsync_pol = 1;
     csi->hsync_pol = 0;
     csi->pixck_pol = 1;
-    csi->frame_sync = 0;
     csi->mono_bpp = 2;
     csi->rgb_swap = 1;
     csi->yuv_format = SUBFORMAT_ID_YVU422;

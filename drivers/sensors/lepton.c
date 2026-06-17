@@ -23,7 +23,7 @@
  *
  * Lepton driver.
  */
-#include "omv_boardconfig.h"
+#include "board_config.h"
 #if (OMV_LEPTON_ENABLE == 1)
 
 #include <stdio.h>
@@ -231,7 +231,8 @@ static int ioctl(omv_csi_t *csi, int request, va_list ap) {
         case OMV_CSI_IOCTL_LEPTON_SET_MODE: {
             int measurement_mode_in = va_arg(ap, int);
             int high_temp_mode_in = va_arg(ap, int);
-            if (lepton.measurement_mode != measurement_mode_in) {
+            if (lepton.measurement_mode != measurement_mode_in ||
+                lepton.high_temp_mode != high_temp_mode_in) {
                 lepton.measurement_mode = measurement_mode_in;
                 lepton.high_temp_mode = high_temp_mode_in;
                 ret = lepton_config(csi, lepton.measurement_mode, lepton.high_temp_mode);
@@ -449,12 +450,11 @@ static int snapshot(omv_csi_t *csi, image_t *image, uint32_t flags) {
         }
     }
 
-    fb_alloc_mark();
     image_t temp = {
         .w = csi->transpose ? lepton.v_res : lepton.h_res,
         .h = csi->transpose ? lepton.h_res : lepton.v_res,
         .pixfmt = PIXFORMAT_GRAYSCALE,
-        .data = fb_alloc(lepton.h_res * lepton.v_res, FB_ALLOC_CACHE_ALIGN),
+        .data = uma_malloc(lepton.h_res * lepton.v_res, UMA_CACHE),
     };
 
     // When not in measurment mode set the min and max temperatures such
@@ -480,7 +480,7 @@ static int snapshot(omv_csi_t *csi, image_t *image, uint32_t flags) {
                      IMAGE_HINT_BILINEAR | IMAGE_HINT_CENTER | IMAGE_HINT_SCALE_ASPECT_EXPAND,
                      NULL, NULL, NULL, NULL);
 
-    fb_alloc_free_till_mark();
+    uma_free(temp.data);
     framebuffer_to_image(fb, image);
     return 0;
 }
@@ -519,7 +519,6 @@ int lepton_init(omv_csi_t *csi) {
     csi->vsync_pol = 1;
     csi->hsync_pol = 0;
     csi->pixck_pol = 0;
-    csi->frame_sync = 0;
     csi->mono_bpp = 1;
 
     return 0;
