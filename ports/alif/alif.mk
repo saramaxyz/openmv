@@ -37,6 +37,7 @@ DAVE2D_DIR=drivers/dave2d
 CORE_M55_HP := $(if $(filter M55_HP,$(MCU_CORE)),1,0)
 CPU_FREQ_HZ := $($(MCU_CORE)_CPU_FREQ_HZ)
 CMSIS_MCU_H := '<system_utils.h>'
+OPENMV_GIT_TAG := $(shell git -C $(TOP_DIR) describe --tags --dirty 2>/dev/null || echo "unknown")
 
 ROMFS_CONFIG := $(OMV_BOARD_CONFIG_DIR)/romfs_config.json
 ROMFS_PART := $(if $(filter M55_HP,$(MCU_CORE)),0,1)

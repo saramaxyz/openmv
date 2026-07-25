@@ -37,6 +37,7 @@
 #define BARK_HIGH_HZ                (8000.0f)
 
 typedef struct _mfcc_fft_plan_t {
+    bool librosa_compatible;
     uint32_t sr;
     uint32_t sample_count;
     uint32_t frame_len;
@@ -50,6 +51,9 @@ typedef struct _mfcc_fft_plan_t {
     float *fft_out;
     float *power;
     uint16_t mel_bins[MFCC_MEL_BINS + 2];
+    uint16_t mel_start_bins[MFCC_MEL_BINS];
+    uint16_t mel_end_bins[MFCC_MEL_BINS];
+    float mel_hz[MFCC_MEL_BINS + 2];
 } mfcc_fft_plan_t;
 
 static bool mfcc_dct_ready = false;
@@ -116,7 +120,7 @@ static void mfcc_fill_window(float *window, uint32_t frame_len) {
     }
 }
 
-static void mfcc_fill_mel_bins(mfcc_fft_plan_t *plan, float fmax_hz) {
+static void mfcc_fill_mel_filters(mfcc_fft_plan_t *plan, float fmax_hz) {
     const float nyquist = (float) plan->sr * 0.5f;
     if (fmax_hz > nyquist) {
         fmax_hz = nyquist;
@@ -132,6 +136,7 @@ static void mfcc_fill_mel_bins(mfcc_fft_plan_t *plan, float fmax_hz) {
     for (uint32_t i = 0; i < MFCC_MEL_BINS + 2; i++) {
         const float mel = mel_min + ((float) i * mel_step);
         const float hz = mfcc_mel_to_hz(mel);
+        plan->mel_hz[i] = hz;
         int32_t bin = (int32_t) (((float) (plan->fft_len + 1) * hz) / (float) plan->sr);
         if (bin < 0) {
             bin = 0;
@@ -152,11 +157,33 @@ static void mfcc_fill_mel_bins(mfcc_fft_plan_t *plan, float fmax_hz) {
             plan->mel_bins[i] = next_bin;
         }
     }
+
+    for (uint32_t m = 0; m < MFCC_MEL_BINS; m++) {
+        const float left = plan->mel_hz[m];
+        const float right = plan->mel_hz[m + 2];
+        int32_t start = (int32_t) ceilf((left * (float) plan->fft_len) / (float) plan->sr);
+        int32_t end = (int32_t) floorf((right * (float) plan->fft_len) / (float) plan->sr);
+        if (start < 0) {
+            start = 0;
+        }
+        if (end < 0) {
+            end = 0;
+        }
+        if (start > (int32_t) plan->spectrum_bins - 1) {
+            start = (int32_t) plan->spectrum_bins - 1;
+        }
+        if (end > (int32_t) plan->spectrum_bins - 1) {
+            end = (int32_t) plan->spectrum_bins - 1;
+        }
+        plan->mel_start_bins[m] = (uint16_t) start;
+        plan->mel_end_bins[m] = (uint16_t) end;
+    }
 }
 
-static bool mfcc_init_fft_plan(mfcc_fft_plan_t *plan, uint32_t sample_count, uint32_t sr, float fmax_hz) {
+static bool mfcc_init_fft_plan(mfcc_fft_plan_t *plan, uint32_t sample_count, uint32_t sr, float fmax_hz, bool librosa_compatible) {
     memset(plan, 0, sizeof(*plan));
 
+    plan->librosa_compatible = librosa_compatible;
     plan->sr = sr ? sr : MFCC_DEFAULT_SR;
     plan->sample_count = sample_count;
     plan->frame_len = (plan->sr * MFCC_WINDOW_MS) / 1000;
@@ -175,10 +202,11 @@ static bool mfcc_init_fft_plan(mfcc_fft_plan_t *plan, uint32_t sample_count, uin
     }
 
     plan->spectrum_bins = (plan->fft_len / 2) + 1;
-    if (sample_count <= plan->frame_len) {
+    const uint32_t frame_span = plan->librosa_compatible ? plan->fft_len : plan->frame_len;
+    if (sample_count <= frame_span) {
         plan->frame_count = 1;
     } else {
-        plan->frame_count = 1 + ((sample_count - plan->frame_len) / plan->hop_len);
+        plan->frame_count = 1 + ((sample_count - frame_span) / plan->hop_len);
     }
 
     if (arm_rfft_fast_init_f32(&plan->rfft, plan->fft_len) != ARM_MATH_SUCCESS) {
@@ -191,7 +219,7 @@ static bool mfcc_init_fft_plan(mfcc_fft_plan_t *plan, uint32_t sample_count, uin
     plan->power = m_new(float, plan->spectrum_bins);
 
     mfcc_fill_window(plan->window, plan->frame_len);
-    mfcc_fill_mel_bins(plan, fmax_hz);
+    mfcc_fill_mel_filters(plan, fmax_hz);
     return true;
 }
 
@@ -213,6 +241,23 @@ static void mfcc_free_fft_plan(mfcc_fft_plan_t *plan) {
 static void mfcc_load_frame(const float *samples, const mfcc_fft_plan_t *plan, uint32_t frame_index, bool preemphasis) {
     const uint32_t offset = frame_index * plan->hop_len;
     memset(plan->fft_in, 0, sizeof(float) * plan->fft_len);
+
+    if (plan->librosa_compatible) {
+        const uint32_t window_left = (plan->fft_len - plan->frame_len) / 2;
+        for (uint32_t i = 0; i < plan->frame_len; i++) {
+            uint32_t src_index = offset + window_left + i;
+            float current = (src_index < plan->sample_count) ? samples[src_index] : 0.0f;
+            if (preemphasis) {
+                float previous = 0.0f;
+                if (src_index > 0 && (src_index - 1) < plan->sample_count) {
+                    previous = samples[src_index - 1];
+                }
+                current -= (MFCC_PREEMPH * previous);
+            }
+            plan->fft_in[window_left + i] = current * plan->window[i];
+        }
+        return;
+    }
 
     for (uint32_t i = 0; i < plan->frame_len; i++) {
         uint32_t src_index = offset + i;
@@ -244,34 +289,56 @@ static void mfcc_compute_power_spectrum(mfcc_fft_plan_t *plan) {
 
 static void mfcc_compute_log_mel(const mfcc_fft_plan_t *plan, float *mel_out) {
     for (uint32_t m = 0; m < MFCC_MEL_BINS; m++) {
-        uint32_t start = plan->mel_bins[m];
-        uint32_t center = plan->mel_bins[m + 1];
-        uint32_t end = plan->mel_bins[m + 2];
         float energy = 0.0f;
 
-        if (center <= start) {
-            center = start + 1;
-        }
-        if (end <= center) {
-            end = center + 1;
-        }
-        if (end >= plan->spectrum_bins) {
-            end = plan->spectrum_bins - 1;
-        }
+        if (plan->librosa_compatible) {
+            const float left = plan->mel_hz[m];
+            const float center_hz = plan->mel_hz[m + 1];
+            const float right = plan->mel_hz[m + 2];
+            const float denom_up = center_hz - left;
+            const float denom_down = right - center_hz;
+            const uint32_t start = plan->mel_start_bins[m];
+            const uint32_t end = plan->mel_end_bins[m];
 
-        float denom_up = (float) (center - start);
-        float denom_down = (float) (end - center);
-
-        for (uint32_t k = start; k < center && k < plan->spectrum_bins; k++) {
-            float weight = ((float) (k - start)) / denom_up;
-            energy += plan->power[k] * weight;
-        }
-        for (uint32_t k = center; k <= end && k < plan->spectrum_bins; k++) {
-            float weight = ((float) (end - k)) / denom_down;
-            if (weight < 0.0f) {
-                weight = 0.0f;
+            for (uint32_t k = start; k <= end && k < plan->spectrum_bins; k++) {
+                const float freq = ((float) k * (float) plan->sr) / (float) plan->fft_len;
+                float weight = 0.0f;
+                if (freq > left && freq < center_hz) {
+                    weight = (freq - left) / denom_up;
+                } else if (freq >= center_hz && freq < right) {
+                    weight = (right - freq) / denom_down;
+                }
+                energy += plan->power[k] * weight;
             }
-            energy += plan->power[k] * weight;
+        } else {
+            uint32_t start = plan->mel_bins[m];
+            uint32_t center = plan->mel_bins[m + 1];
+            uint32_t end = plan->mel_bins[m + 2];
+
+            if (center <= start) {
+                center = start + 1;
+            }
+            if (end <= center) {
+                end = center + 1;
+            }
+            if (end >= plan->spectrum_bins) {
+                end = plan->spectrum_bins - 1;
+            }
+
+            float denom_up = (float) (center - start);
+            float denom_down = (float) (end - center);
+
+            for (uint32_t k = start; k < center && k < plan->spectrum_bins; k++) {
+                float weight = ((float) (k - start)) / denom_up;
+                energy += plan->power[k] * weight;
+            }
+            for (uint32_t k = center; k <= end && k < plan->spectrum_bins; k++) {
+                float weight = ((float) (end - k)) / denom_down;
+                if (weight < 0.0f) {
+                    weight = 0.0f;
+                }
+                energy += plan->power[k] * weight;
+            }
         }
 
         mel_out[m] = 10.0f * log10f(energy + MFCC_EPSILON);
@@ -342,7 +409,7 @@ static mp_obj_t py_mfcc_extract(size_t n_args, const mp_obj_t *pos_args, mp_map_
     float *coeffs = NULL;
     mp_obj_t result = mp_const_none;
 
-    if (!mfcc_init_fft_plan(&plan, sample_count, sr, BARK_HIGH_HZ)) {
+    if (!mfcc_init_fft_plan(&plan, sample_count, sr, BARK_HIGH_HZ, true)) {
         mp_raise_msg(&mp_type_ValueError, MP_ERROR_TEXT("Unsupported MFCC sample rate or FFT size"));
     }
 
@@ -437,7 +504,7 @@ static mp_obj_t py_mfcc_bark_energies(size_t n_args, const mp_obj_t *pos_args, m
     float acc_bark = 0.0f;
     float acc_high = 0.0f;
 
-    if (!mfcc_init_fft_plan(&plan, sample_count, sr, BARK_HIGH_HZ)) {
+    if (!mfcc_init_fft_plan(&plan, sample_count, sr, BARK_HIGH_HZ, false)) {
         mp_raise_msg(&mp_type_ValueError, MP_ERROR_TEXT("Unsupported MFCC sample rate or FFT size"));
     }
 
