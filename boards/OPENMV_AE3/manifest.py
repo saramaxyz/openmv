@@ -35,9 +35,9 @@ require("protocol", library="openmv-lib")
 include("$(MPY_DIR)/extmod/asyncio")
 freeze("$(OMV_LIB_DIR)/", "openamp.py")
 
-# Sarama collar firmware (HP core only — src/ does not fit in the HE image,
-# and no Sarama Python runs on the HE core; see firmware/src/preroll.py)
-include("$(BOARD_DIR)/manifest_$(MCU_CORE).py")
+# The Sarama collar app is NOT frozen here — it ships in the OTA romfs
+# (firmware/ota_firmware/app/) so it can be updated over the air. Freezing it
+# would mean a DFU reflash for every app change.
 
 # Boot script.
 freeze("$(OMV_LIB_DIR)/alif/$(MCU_CORE)", "_boot.py")
