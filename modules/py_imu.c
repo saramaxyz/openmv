@@ -391,6 +391,31 @@ static mp_obj_t py_imu_read_reg(mp_obj_t addr) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(py_imu_read_reg_obj, py_imu_read_reg);
 
+static mp_obj_t py_imu_read_regs(mp_obj_t addr_obj, mp_obj_t len_obj) {
+    error_on_not_ready();
+
+    mp_int_t addr = mp_obj_get_int(addr_obj);
+    mp_int_t len = mp_obj_get_int(len_obj);
+    if ((addr < 0) || (addr > 0xFF)) {
+        mp_raise_ValueError(MP_ERROR_TEXT("IMU register address out of range"));
+    }
+    if ((len <= 0) || (len > 4096)) {
+        mp_raise_ValueError(MP_ERROR_TEXT("IMU bulk read length out of range"));
+    }
+
+    size_t length = (size_t) len;
+    uint8_t *data = m_new(uint8_t, length);
+    int32_t ret = LSM_FUNC(read_reg) (&dev_ctx, (uint8_t) addr, data, (uint16_t) length);
+    if (ret != 0) {
+        m_del(uint8_t, data, length);
+        mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("IMU bulk read failed"));
+    }
+    mp_obj_t result = mp_obj_new_bytes(data, length);
+    m_del(uint8_t, data, length);
+    return result;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(py_imu_read_regs_obj, py_imu_read_regs);
+
 static const mp_rom_map_elem_t globals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__),            MP_OBJ_NEW_QSTR(MP_QSTR_imu) },
     { MP_ROM_QSTR(MP_QSTR_acceleration_mg),     MP_ROM_PTR(&py_imu_acceleration_mg_obj) },
@@ -401,6 +426,7 @@ static const mp_rom_map_elem_t globals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_sleep),               MP_ROM_PTR(&py_imu_sleep_obj) },
     { MP_ROM_QSTR(MP_QSTR___write_reg),         MP_ROM_PTR(&py_imu_write_reg_obj) },
     { MP_ROM_QSTR(MP_QSTR___read_reg),          MP_ROM_PTR(&py_imu_read_reg_obj) },
+    { MP_ROM_QSTR(MP_QSTR___read_regs),         MP_ROM_PTR(&py_imu_read_regs_obj) },
 };
 
 static MP_DEFINE_CONST_DICT(globals_dict, globals_dict_table);
