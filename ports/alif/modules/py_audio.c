@@ -360,7 +360,17 @@ void py_audio_deinit() {
     audio_initialized = false;
 }
 
+// Allow an HE worker to release DMA/PDM before its host stops the core.
+static mp_obj_t py_audio_deinit_mp(void) {
+    py_audio_deinit();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(py_audio_deinit_obj, py_audio_deinit_mp);
+
 static mp_obj_t py_audio_start_streaming(mp_obj_t callback_obj) {
+    if (!audio_initialized) {
+        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Audio is not initialized."));
+    }
     audio_state->head = 0;
     audio_state->tail = 0;
     audio_state->t_samples = 0;
@@ -380,7 +390,7 @@ static mp_obj_t py_audio_start_streaming(mp_obj_t callback_obj) {
 static MP_DEFINE_CONST_FUN_OBJ_1(py_audio_start_streaming_obj, py_audio_start_streaming);
 
 static mp_obj_t py_audio_stop_streaming() {
-    if (audio_state->streaming) {
+    if (audio_initialized && audio_state->streaming) {
         audio_state->streaming = false;
         for (mp_uint_t start = mp_hal_ticks_ms();
              (mp_hal_ticks_ms() - start) < 100;
@@ -393,6 +403,9 @@ static mp_obj_t py_audio_stop_streaming() {
 static MP_DEFINE_CONST_FUN_OBJ_0(py_audio_stop_streaming_obj, py_audio_stop_streaming);
 
 static mp_obj_t py_audio_get_buffer(uint n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    if (!audio_initialized) {
+        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Audio is not initialized."));
+    }
     enum {
         ARG_timeout
     };
@@ -437,6 +450,7 @@ static MP_DEFINE_CONST_FUN_OBJ_KW(py_audio_get_buffer_obj, 0, py_audio_get_buffe
 static const mp_rom_map_elem_t globals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_audio) },
     { MP_ROM_QSTR(MP_QSTR_init), MP_ROM_PTR(&py_audio_init_obj) },
+    { MP_ROM_QSTR(MP_QSTR_deinit), MP_ROM_PTR(&py_audio_deinit_obj) },
     { MP_ROM_QSTR(MP_QSTR_start_streaming), MP_ROM_PTR(&py_audio_start_streaming_obj) },
     { MP_ROM_QSTR(MP_QSTR_stop_streaming), MP_ROM_PTR(&py_audio_stop_streaming_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_buffer), MP_ROM_PTR(&py_audio_get_buffer_obj) },
